@@ -38,7 +38,7 @@ def yemekleri_getir():
     try:
         # Veritabanına bağlan ve ilk 5 yemeği test için çek
         with engine.connect() as connection:
-            sorgu = text("SELECT TOP 5 Yemek_Id, Yemek_Adı, Kalori_Kcal, Kategori FROM Yemekler")
+            sorgu = text("SELECT Yemek_Id, Yemek_Adı, Kalori_Kcal, Kategori FROM Yemekler")
             sonuc = connection.execute(sorgu)
             
             # Gelen veriyi JSON formatına (sözlük yapısına) çevir
