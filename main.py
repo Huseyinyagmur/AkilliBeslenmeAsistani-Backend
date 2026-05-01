@@ -1,6 +1,7 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import create_engine, text
+from services import diyet_olustur
 import urllib
 
 # FastAPI uygulamasını başlat
@@ -38,7 +39,7 @@ def yemekleri_getir():
     try:
         # Veritabanına bağlan ve ilk 5 yemeği test için çek
         with engine.connect() as connection:
-            sorgu = text("SELECT Yemek_Id, Yemek_Adı, Kalori_Kcal, Kategori FROM Yemekler")
+            sorgu = text("SELECT Yemek_Id, Yemek_Adı,Kalori_Kcal, Kategori FROM Yemekler")
             sonuc = connection.execute(sorgu)
             
             # Gelen veriyi JSON formatına (sözlük yapısına) çevir
@@ -51,3 +52,13 @@ def yemekleri_getir():
     except Exception as e:
         # Eğer veritabanı bağlantısında hata olursa uygulamayı çökertme, ekrana hatayı bas
         raise HTTPException(status_code=500, detail=f"Veritabanı hatası: {str(e)}")
+    
+# 🧠 YENİ: YAPAY ZEKA (OPTİMİZASYON) UÇ NOKTASI
+@app.get("/api/diyet-hazirla/{hedef_kalori}")
+def akilli_diyet_olustur(hedef_kalori: int):
+    sonuc = diyet_olustur(hedef_kalori)
+    
+    if sonuc["durum"] == "Başarılı":
+        return sonuc
+    else:
+        raise HTTPException(status_code=400, detail=sonuc["mesaj"])
