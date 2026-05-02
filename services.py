@@ -15,10 +15,9 @@ params = urllib.parse.quote_plus(
 engine = create_engine(f'mssql+pyodbc:///?odbc_connect={params}')
 
 def diyet_olustur(hedef_kalori: int):
-    # 1. Yemekleri ve MAKROLARI SQL'den Çek
+    # 1. Yemekleri ve Makroları Çek
     yemekler = []
     with engine.connect() as conn:
-        # Sütun isimlerini kendi veritabanına göre ayarladığından emin ol!
         sorgu = text("""
             SELECT Yemek_Id, Yemek_Adı, Kalori_Kcal, Kategori, 
                    Protein_g, Karbonhidrat_g, Yag_g 
@@ -40,22 +39,19 @@ def diyet_olustur(hedef_kalori: int):
                 "yag": float(row.Yag_g)
             })
     
-    # 2. Makro Hedeflerini Hesapla (Dengeli Diyet: %30 P, %40 C, %30 Y)
     hedef_protein_g = (hedef_kalori * 0.30) / 4
     hedef_karb_g = (hedef_kalori * 0.40) / 4
     hedef_yag_g = (hedef_kalori * 0.30) / 9
 
-    # 3. PuLP Modelini Başlat
-    prob = pulp.LpProblem("Makro_Dengeli_Diyet_Optimizasyonu", pulp.LpMinimize)
+    prob = pulp.LpProblem("Ogunlu_Makro_Dengeli_Diyet", pulp.LpMinimize)
     yemek_degiskenleri = pulp.LpVariable.dicts("Yemek", [y["id"] for y in yemekler], cat='Binary')
     prob += 0, "Amac"
     
-    # KISIT 1: Kalori Hedefi (+- 100 kcal esneklik)
+    # Kalori ve Makro Kısıtları
     toplam_kalori = pulp.lpSum([yemek_degiskenleri[y["id"]] * y["kalori"] for y in yemekler])
     prob += toplam_kalori >= hedef_kalori - 100, "Min_Kalori"
     prob += toplam_kalori <= hedef_kalori + 100, "Max_Kalori"
 
-    # --- YENİ: MAKRO KISITLARI (+- 20 gram esneklik veriyoruz ki model tıkanmasın) ---
     toplam_protein = pulp.lpSum([yemek_degiskenleri[y["id"]] * y["protein"] for y in yemekler])
     prob += toplam_protein >= hedef_protein_g - 20, "Min_Protein"
     prob += toplam_protein <= hedef_protein_g + 20, "Max_Protein"
@@ -68,30 +64,49 @@ def diyet_olustur(hedef_kalori: int):
     prob += toplam_yag >= hedef_yag_g - 15, "Min_Yag"
     prob += toplam_yag <= hedef_yag_g + 15, "Max_Yag"
 
-    # KISIT 2: Çeşit Sayısı ve Kategori Mantığı
-    toplam_secilen_yemek = pulp.lpSum([yemek_degiskenleri[y["id"]] for y in yemekler])
-    prob += toplam_secilen_yemek >= 3, "Min_Cesit"
-    prob += toplam_secilen_yemek <= 5, "Max_Cesit"
+    # --- YENİ: ÖĞÜN KATEGORİLEMESİ VE KISITLARI ---
+    # Not: Excel'deki yazım hatalarına karşı Türkçe karakterli/karaktersiz varyasyonları ekledik
+    sabah_kat = ["Kahvalti", "Kahvaltı", "Hamur İsi", "Hamur İşi"]
+    ana_ogun_kat = ["Ana Yemek", "Çorba", "Corba", "Fast Food", "Salata", "Meze"]
+    ara_ogun_kat = ["Tatlı", "Tatli", "Meyve", "Atıştırmalık", "Atistirmalik", "İcecek", "İçecek"]
 
+    # 1. Sabah için tam 1 çeşit seç
+    prob += pulp.lpSum([yemek_degiskenleri[y["id"]] for y in yemekler if y["kategori"] in sabah_kat]) == 1, "Sabah_Kurali"
+
+    # 2. Öğle ve Akşam için toplam 2 veya 3 çeşit seç (Örn: 2 ana yemek, veya 1 ana yemek + 1 çorba)
+    prob += pulp.lpSum([yemek_degiskenleri[y["id"]] for y in yemekler if y["kategori"] in ana_ogun_kat]) >= 2, "Min_Ana_Ogun"
+    prob += pulp.lpSum([yemek_degiskenleri[y["id"]] for y in yemekler if y["kategori"] in ana_ogun_kat]) <= 3, "Max_Ana_Ogun"
+
+    # 3. Ara öğün için 1 veya 2 çeşit seç (Tatlı, içecek vs.)
+    prob += pulp.lpSum([yemek_degiskenleri[y["id"]] for y in yemekler if y["kategori"] in ara_ogun_kat]) >= 1, "Min_Ara_Ogun"
+    prob += pulp.lpSum([yemek_degiskenleri[y["id"]] for y in yemekler if y["kategori"] in ara_ogun_kat]) <= 2, "Max_Ara_Ogun"
+
+    # 4. Kategori çeşitliliği (Her kategoriden maksimum 1 tane, 2 çorba vermesin)
     kategoriler = set([y["kategori"] for y in yemekler])
     for kat in kategoriler:
         prob += pulp.lpSum([yemek_degiskenleri[y["id"]] for y in yemekler if y["kategori"] == kat]) <= 1, f"Max_1_{kat}"
 
-    ana_yemekler = [y["id"] for y in yemekler if y["kategori"] == "Ana Yemek"]
-    if ana_yemekler:
-        prob += pulp.lpSum([yemek_degiskenleri[y_id] for y_id in ana_yemekler]) == 1, "Zorunlu_Ana_Yemek"
-
-    # 4. Modeli Çöz
     prob.solve(pulp.PULP_CBC_CMD(msg=False))
     
-    # 5. Sonucu Formatla ve Döndür
-    secilen_menu = []
+    # --- YENİ: SONUCU ÖĞÜNLERE BÖLEREK FORMATLAMA ---
+    ogunler = {
+        "Sabah": [],
+        "Öğle_ve_Akşam": [],
+        "Ara_Öğün": []
+    }
     hesaplanan_kalori, hesaplanan_protein, hesaplanan_karb, hesaplanan_yag = 0.0, 0.0, 0.0, 0.0
     
     if pulp.LpStatus[prob.status] == 'Optimal':
         for y in yemekler:
             if yemek_degiskenleri[y["id"]].varValue == 1.0:
-                secilen_menu.append(y)
+                # Yemeği ait olduğu öğüne yerleştir
+                if y["kategori"] in sabah_kat:
+                    ogunler["Sabah"].append(y)
+                elif y["kategori"] in ara_ogun_kat:
+                    ogunler["Ara_Öğün"].append(y)
+                else:
+                    ogunler["Öğle_ve_Akşam"].append(y)
+
                 hesaplanan_kalori += y["kalori"]
                 hesaplanan_protein += y["protein"]
                 hesaplanan_karb += y["karb"]
@@ -106,7 +121,7 @@ def diyet_olustur(hedef_kalori: int):
                 "karb_g": round(hesaplanan_karb, 1),
                 "yag_g": round(hesaplanan_yag, 1)
             },
-            "menu": secilen_menu
+            "ogunler": ogunler # Artık "menu" yerine düzenli "ogunler" dönüyor
         }
     else:
-        return {"durum": "Başarısız", "mesaj": "Bu kalori ve makro dengesine tam uygun bir menü bulunamadı. Lütfen kaloriyi değiştirin."}
+        return {"durum": "Başarısız", "mesaj": "Bu hedeflere uygun menü bulunamadı."}
