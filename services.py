@@ -48,25 +48,25 @@ def diyet_olustur(hedef_kalori: int):
     
     # Kalori ve Makro Kısıtları
     toplam_kalori = pulp.lpSum([yemek_degiskenleri[y["id"]] * y["kalori"] for y in yemekler])
-    prob += toplam_kalori >= hedef_kalori - 100, "Min_Kalori"
-    prob += toplam_kalori <= hedef_kalori + 100, "Max_Kalori"
+    prob += toplam_kalori >= hedef_kalori - 200, "Min_Kalori"
+    prob += toplam_kalori <= hedef_kalori + 200, "Max_Kalori"
 
     toplam_protein = pulp.lpSum([yemek_degiskenleri[y["id"]] * y["protein"] for y in yemekler])
-    prob += toplam_protein >= hedef_protein_g - 25, "Min_Protein"
-    prob += toplam_protein <= hedef_protein_g + 25, "Max_Protein"
+    prob += toplam_protein >= hedef_protein_g - 50, "Min_Protein"
+    prob += toplam_protein <= hedef_protein_g + 50, "Max_Protein"
 
     toplam_karb = pulp.lpSum([yemek_degiskenleri[y["id"]] * y["karb"] for y in yemekler])
-    prob += toplam_karb >= hedef_karb_g - 25, "Min_Karb"
-    prob += toplam_karb <= hedef_karb_g + 25, "Max_Karb"
+    prob += toplam_karb >= hedef_karb_g - 50, "Min_Karb"
+    prob += toplam_karb <= hedef_karb_g + 50, "Max_Karb"
 
     toplam_yag = pulp.lpSum([yemek_degiskenleri[y["id"]] * y["yag"] for y in yemekler])
-    prob += toplam_yag >= hedef_yag_g - 20, "Min_Yag"
-    prob += toplam_yag <= hedef_yag_g + 20, "Max_Yag"
+    prob += toplam_yag >= hedef_yag_g - 30, "Min_Yag"
+    prob += toplam_yag <= hedef_yag_g + 30, "Max_Yag"
 
     # Çeşit Sayısı
     toplam_secilen_yemek = pulp.lpSum([yemek_degiskenleri[y["id"]] for y in yemekler])
     prob += toplam_secilen_yemek >= 3, "Min_Cesit"
-    prob += toplam_secilen_yemek <= 5, "Max_Cesit"
+    prob += toplam_secilen_yemek <= 7, "Max_Cesit"
 
     # Kategori Listeleri
     sabah_kat = ["Kahvalti", "Kahvaltı", "Hamur İsi", "Hamur İşi"]
