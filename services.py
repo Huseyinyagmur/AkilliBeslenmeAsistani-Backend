@@ -2,7 +2,7 @@ import pulp
 from sqlalchemy import create_engine, text
 import urllib
 
-# Veritabanı Bağlantısı
+
 server_adi = 'LAPTOP-V013QBHO' 
 veritabani_adi = 'DiyetAppDB' 
 
@@ -139,7 +139,7 @@ def kullanici_kaydet(ad: str, cinsiyet: str, yas: int, boy_cm: float, kilo_kg: f
     hedef_kalori = bmr_ve_kalori_hesapla(cinsiyet, yas, boy_cm, kilo_kg, hareket_katsayisi)
     
     with engine.begin() as conn: 
-        # Tablo veritabanında yoksa otomatik olarak oluştur
+        
         conn.execute(text("""
             IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='Kullanicilar' and xtype='U')
             CREATE TABLE Kullanicilar (
@@ -154,7 +154,7 @@ def kullanici_kaydet(ad: str, cinsiyet: str, yas: int, boy_cm: float, kilo_kg: f
             )
         """))
         
-        # Yeni kullanıcıyı ekle
+        
         sorgu = text("""
             INSERT INTO Kullanicilar (Ad, Cinsiyet, Yas, Boy_cm, Kilo_kg, Hareket_Katsayisi, Hedef_Kalori)
             VALUES (:ad, :cinsiyet, :yas, :boy, :kilo, :hareket, :hedef)
