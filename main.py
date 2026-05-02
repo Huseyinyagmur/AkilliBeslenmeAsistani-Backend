@@ -38,6 +38,7 @@ class KullaniciBilgileri(BaseModel):
     boy_cm: float
     kilo_kg: float
     hareket_katsayisi: float
+    hedef: str
 
 @app.get("/")
 def root():
@@ -80,7 +81,8 @@ def yeni_kullanici_olustur(kullanici: KullaniciBilgileri):
             yas=kullanici.yas,
             boy_cm=kullanici.boy_cm,
             kilo_kg=kullanici.kilo_kg,
-            hareket_katsayisi=kullanici.hareket_katsayisi
+            hareket_katsayisi=kullanici.hareket_katsayisi,
+            hedef=kullanici.hedef
         )
         return sonuc
     except Exception as e:

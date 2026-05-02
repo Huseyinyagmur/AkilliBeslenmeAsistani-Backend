@@ -16,8 +16,9 @@ engine = create_engine(f'mssql+pyodbc:///?odbc_connect={params}')
 def diyet_olustur(hedef_kalori: int):
     yemekler = []
     with engine.connect() as conn:
+        # 1. Sütun adını Olcu_Birimi olarak güncelledik
         sorgu = text("""
-            SELECT Yemek_Id, Yemek_Adı, Kalori_Kcal, Kategori, 
+            SELECT Yemek_Id, Yemek_Adı, Olcu_Birimi, Kalori_Kcal, Kategori, 
                    Protein_g, Karbonhidrat_g, Yag_g 
             FROM Yemekler 
             WHERE Kalori_Kcal IS NOT NULL 
@@ -27,16 +28,22 @@ def diyet_olustur(hedef_kalori: int):
         """)
         sonuc = conn.execute(sorgu)
         for row in sonuc:
+            # 2. Burada da row.Olcu_Birimi olarak çekiyoruz
+            porsiyon = row.Olcu_Birimi if row.Olcu_Birimi else ""
+            
+            # Porsiyon ile ismi birleştir (Örn: "1 Dilim" + " " + "Kaşarlı Tost")
+            tam_isim = f"{porsiyon} {row.Yemek_Adı}".strip()
+
             yemekler.append({
                 "id": row.Yemek_Id,
-                "isim": row.Yemek_Adı,
+                "isim": tam_isim,
                 "kalori": float(row.Kalori_Kcal),
                 "kategori": row.Kategori,
                 "protein": float(row.Protein_g),
                 "karb": float(row.Karbonhidrat_g),
                 "yag": float(row.Yag_g)
             })
-    
+        
     # Makro Hedefleri (Standart %30 Protein, %40 Karb, %30 Yağ dağılımı)
     hedef_protein_g = (hedef_kalori * 0.30) / 4
     hedef_karb_g = (hedef_kalori * 0.40) / 4
@@ -124,7 +131,32 @@ def diyet_olustur(hedef_kalori: int):
     karb_bombalari = [yemek_degiskenleri[y["id"]] for y in yemekler if "Makarna" in y["isim"] or "Pilav" in y["isim"]]
     if karb_bombalari:
         prob += pulp.lpSum(karb_bombalari) <= 1, "Max_1_Pilav_Veya_Makarna"
+# 6. Kahvaltıda Hamur İşi / Ekmek Yığılmasını Önle (GELİŞMİŞ TÜRKÇE KONTROLÜ)
+    kahvalti_karb = [
+        yemek_degiskenleri[y["id"]] for y in yemekler 
+        if any(kelime in y["isim"].lower() for kelime in [
+            "tost", "börek", "borek", "böreg", "boreg", 
+            "pide", "simit", "ekmek", "ekmeg", 
+            "açma", "acma", "poğaça", "pogaca", "gözleme"
+        ])
+    ]
+    if kahvalti_karb:
+        prob += pulp.lpSum(kahvalti_karb) <= 1, "Max_1_Kahvalti_Hamur_Isi"
 
+    # 7. Yoğurt Türevi Yığılmasını Önle (Öğlen hem Cacık hem Yoğurt vermesin)
+    sut_urunleri = [yemek_degiskenleri[y["id"]] for y in yemekler if any(kelime in y["isim"] for kelime in ["Yoğurt", "Yogurt", "Cacık", "Cacik", "Ayran"])]
+    if sut_urunleri:
+        prob += pulp.lpSum(sut_urunleri) <= 1, "Max_1_Sut_Urunu"
+
+    # 8. Çift Salata Saçmalığını Önle (Ton balıklı salata + Tavuklu salata yan yana gelmesin)
+    salatalar = [yemek_degiskenleri[y["id"]] for y in yemekler if "Salata" in y["isim"] or y["kategori"] == "Salata"]
+    if salatalar:
+        prob += pulp.lpSum(salatalar) <= 1, "Max_1_Salata"
+        
+    # 9. Peynir Yığılmasını Önle (Kaşar Peyniri + Beyaz Peynir + Tulum Peyniri doldurmasın)
+    peynirler = [yemek_degiskenleri[y["id"]] for y in yemekler if "Peynir" in y["isim"]]
+    if peynirler:
+        prob += pulp.lpSum(peynirler) <= 1, "Max_1_Peynir"
     # ----------------------------------------------------------
     # Modeli Çöz
     prob.solve(pulp.PULP_CBC_CMD(msg=False))
@@ -165,18 +197,31 @@ def diyet_olustur(hedef_kalori: int):
     else:
         return {"durum": "Başarısız", "mesaj": "Bu kaloriye ve makro hedeflerine uygun mantıklı bir menü bulunamadı."}
 
-def bmr_ve_kalori_hesapla(cinsiyet: str, yas: int, boy_cm: float, kilo_kg: float, hareket_katsayisi: float):
+def bmr_ve_kalori_hesapla(cinsiyet: str, yas: int, boy_cm: float, kilo_kg: float, hareket_katsayisi: float, hedef: str):
     # Mifflin-St Jeor Formülü
     if cinsiyet.lower() == "erkek":
         bmr = (10 * kilo_kg) + (6.25 * boy_cm) - (5 * yas) + 5
     else:
         bmr = (10 * kilo_kg) + (6.25 * boy_cm) - (5 * yas) - 161
     
-    hedef_kalori = bmr * hareket_katsayisi
+    # TDEE (Günlük Harcanan Toplam Kalori)
+    gunluk_harcanan_kalori = bmr * hareket_katsayisi
+    
+    # HEDEFE GÖRE KALORİ MANİPÜLASYONU
+    if hedef == "Kilo Ver":
+        hedef_kalori = gunluk_harcanan_kalori - 500  # Zayıflamak için 500 kcal açık
+    elif hedef == "Kas Yap":
+        hedef_kalori = gunluk_harcanan_kalori + 300  # Büyümek için 300 kcal fazlalık
+    else:
+        hedef_kalori = gunluk_harcanan_kalori # "Kilomu Koru" ise aynı kalır
+
     return int(hedef_kalori)
 
-def kullanici_kaydet(ad: str, cinsiyet: str, yas: int, boy_cm: float, kilo_kg: float, hareket_katsayisi: float):
-    hedef_kalori = bmr_ve_kalori_hesapla(cinsiyet, yas, boy_cm, kilo_kg, hareket_katsayisi)
+# Kullanıcı kaydet fonksiyonuna da 'hedef' parametresini ekliyoruz
+def kullanici_kaydet(ad: str, cinsiyet: str, yas: int, boy_cm: float, kilo_kg: float, hareket_katsayisi: float, hedef: str):
+    hedef_kalori = bmr_ve_kalori_hesapla(cinsiyet, yas, boy_cm, kilo_kg, hareket_katsayisi, hedef)
+    
+    # ... (Geri kalan veritabanı kayıt işlemleri aynı kalacak) ...
     
     with engine.begin() as conn: 
         conn.execute(text("""
