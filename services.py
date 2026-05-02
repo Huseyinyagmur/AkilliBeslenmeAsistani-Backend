@@ -15,68 +15,98 @@ params = urllib.parse.quote_plus(
 engine = create_engine(f'mssql+pyodbc:///?odbc_connect={params}')
 
 def diyet_olustur(hedef_kalori: int):
-    # 1. Yemekleri SQL'den Çek
+    # 1. Yemekleri ve MAKROLARI SQL'den Çek
     yemekler = []
     with engine.connect() as conn:
-        sorgu = text("SELECT Yemek_Id, Yemek_Adı, Kalori_Kcal, Kategori FROM Yemekler WHERE Kalori_Kcal IS NOT NULL")
+        # Sütun isimlerini kendi veritabanına göre ayarladığından emin ol!
+        sorgu = text("""
+            SELECT Yemek_Id, Yemek_Adı, Kalori_Kcal, Kategori, 
+                   Protein_g, Karbonhidrat_g, Yag_g 
+            FROM Yemekler 
+            WHERE Kalori_Kcal IS NOT NULL 
+              AND Protein_g IS NOT NULL 
+              AND Karbonhidrat_g IS NOT NULL 
+              AND Yag_g IS NOT NULL
+        """)
         sonuc = conn.execute(sorgu)
         for row in sonuc:
             yemekler.append({
                 "id": row.Yemek_Id,
                 "isim": row.Yemek_Adı,
                 "kalori": float(row.Kalori_Kcal),
-                "kategori": row.Kategori
+                "kategori": row.Kategori,
+                "protein": float(row.Protein_g),
+                "karb": float(row.Karbonhidrat_g),
+                "yag": float(row.Yag_g)
             })
     
-    # 2. PuLP Matematiksel Modeli Başlat
-    prob = pulp.LpProblem("Diyet_Optimizasyonu", pulp.LpMinimize)
-    
-    # Karar Değişkenleri
+    # 2. Makro Hedeflerini Hesapla (Dengeli Diyet: %30 P, %40 C, %30 Y)
+    hedef_protein_g = (hedef_kalori * 0.30) / 4
+    hedef_karb_g = (hedef_kalori * 0.40) / 4
+    hedef_yag_g = (hedef_kalori * 0.30) / 9
+
+    # 3. PuLP Modelini Başlat
+    prob = pulp.LpProblem("Makro_Dengeli_Diyet_Optimizasyonu", pulp.LpMinimize)
     yemek_degiskenleri = pulp.LpVariable.dicts("Yemek", [y["id"] for y in yemekler], cat='Binary')
-    
     prob += 0, "Amac"
     
     # KISIT 1: Kalori Hedefi (+- 100 kcal esneklik)
     toplam_kalori = pulp.lpSum([yemek_degiskenleri[y["id"]] * y["kalori"] for y in yemekler])
     prob += toplam_kalori >= hedef_kalori - 100, "Min_Kalori"
     prob += toplam_kalori <= hedef_kalori + 100, "Max_Kalori"
-    
-    # KISIT 2: Çeşit Sayısı (Günlük 3 ile 5 farklı yemek/atıştırmalık)
+
+    # --- YENİ: MAKRO KISITLARI (+- 20 gram esneklik veriyoruz ki model tıkanmasın) ---
+    toplam_protein = pulp.lpSum([yemek_degiskenleri[y["id"]] * y["protein"] for y in yemekler])
+    prob += toplam_protein >= hedef_protein_g - 20, "Min_Protein"
+    prob += toplam_protein <= hedef_protein_g + 20, "Max_Protein"
+
+    toplam_karb = pulp.lpSum([yemek_degiskenleri[y["id"]] * y["karb"] for y in yemekler])
+    prob += toplam_karb >= hedef_karb_g - 20, "Min_Karb"
+    prob += toplam_karb <= hedef_karb_g + 20, "Max_Karb"
+
+    toplam_yag = pulp.lpSum([yemek_degiskenleri[y["id"]] * y["yag"] for y in yemekler])
+    prob += toplam_yag >= hedef_yag_g - 15, "Min_Yag"
+    prob += toplam_yag <= hedef_yag_g + 15, "Max_Yag"
+
+    # KISIT 2: Çeşit Sayısı ve Kategori Mantığı
     toplam_secilen_yemek = pulp.lpSum([yemek_degiskenleri[y["id"]] for y in yemekler])
     prob += toplam_secilen_yemek >= 3, "Min_Cesit"
     prob += toplam_secilen_yemek <= 5, "Max_Cesit"
 
-    # --- MANTIKLI KATEGORİ DAĞILIMI (YENİ) ---
     kategoriler = set([y["kategori"] for y in yemekler])
-    
     for kat in kategoriler:
-        # Kural: Aynı kategoriden birden fazla yemek seçilemez (Örn: 2 tatlı veya 2 çorba yok)
         prob += pulp.lpSum([yemek_degiskenleri[y["id"]] for y in yemekler if y["kategori"] == kat]) <= 1, f"Max_1_{kat}"
 
-    # --- ZORUNLU KATEGORİLER (YENİ) ---
-    # Diyetin doyurucu olması için 1 adet 'Ana Yemek' seçilmesini zorunlu kılıyoruz
     ana_yemekler = [y["id"] for y in yemekler if y["kategori"] == "Ana Yemek"]
     if ana_yemekler:
         prob += pulp.lpSum([yemek_degiskenleri[y_id] for y_id in ana_yemekler]) == 1, "Zorunlu_Ana_Yemek"
 
-    # 3. Modeli Çöz
+    # 4. Modeli Çöz
     prob.solve(pulp.PULP_CBC_CMD(msg=False))
     
-    # 4. Sonucu Formatla ve Döndür
+    # 5. Sonucu Formatla ve Döndür
     secilen_menu = []
-    hesaplanan_kalori = 0.0
+    hesaplanan_kalori, hesaplanan_protein, hesaplanan_karb, hesaplanan_yag = 0.0, 0.0, 0.0, 0.0
     
     if pulp.LpStatus[prob.status] == 'Optimal':
         for y in yemekler:
             if yemek_degiskenleri[y["id"]].varValue == 1.0:
                 secilen_menu.append(y)
                 hesaplanan_kalori += y["kalori"]
+                hesaplanan_protein += y["protein"]
+                hesaplanan_karb += y["karb"]
+                hesaplanan_yag += y["yag"]
                 
         return {
             "durum": "Başarılı",
             "hedef_kalori": hedef_kalori,
-            "ulasilan_kalori": round(hesaplanan_kalori, 2),
+            "gerceklesen": {
+                "kalori": round(hesaplanan_kalori, 1),
+                "protein_g": round(hesaplanan_protein, 1),
+                "karb_g": round(hesaplanan_karb, 1),
+                "yag_g": round(hesaplanan_yag, 1)
+            },
             "menu": secilen_menu
         }
     else:
-        return {"durum": "Başarısız", "mesaj": "Belirlenen kriterlere ve kaloriye uygun bir menü oluşturulamadı."}
+        return {"durum": "Başarısız", "mesaj": "Bu kalori ve makro dengesine tam uygun bir menü bulunamadı. Lütfen kaloriyi değiştirin."}
