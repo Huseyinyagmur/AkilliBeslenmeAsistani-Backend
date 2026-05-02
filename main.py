@@ -1,7 +1,8 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import create_engine, text
-from services import diyet_olustur
+from pydantic import BaseModel
+from services import diyet_olustur, kullanici_kaydet
 import urllib
 
 # FastAPI uygulamasını başlat
@@ -17,7 +18,7 @@ app.add_middleware(
 )
 
 # --- VERİTABANI BAĞLANTISI ---
-server_adi = 'LAPTOP-V013QBHO' # <--- BURAYA KENDİ SQL SERVER ADINI YAZ
+server_adi = 'LAPTOP-V013QBHO' 
 veritabani_adi = 'DiyetAppDB'
 
 params = urllib.parse.quote_plus(
@@ -29,20 +30,27 @@ params = urllib.parse.quote_plus(
 engine = create_engine(f'mssql+pyodbc:///?odbc_connect={params}')
 # -----------------------------
 
+# API'nin kabul edeceği kullanıcı şablonu (Pydantic Modeli)
+class KullaniciBilgileri(BaseModel):
+    ad: str
+    cinsiyet: str  # "erkek" veya "kadin"
+    yas: int
+    boy_cm: float
+    kilo_kg: float
+    hareket_katsayisi: float
+
 @app.get("/")
 def root():
     return {"mesaj": "Diyet Asistanı API'si başarıyla çalışıyor! 🚀"}
 
-# YENİ EKLENEN KISIM: Veritabanından Yemekleri Çeken Endpoint
+# Veritabanından Yemekleri Çeken Endpoint
 @app.get("/api/yemekler")
 def yemekleri_getir():
     try:
-        # Veritabanına bağlan ve ilk 5 yemeği test için çek
         with engine.connect() as connection:
-            sorgu = text("SELECT Yemek_Id, Yemek_Adı,Kalori_Kcal, Kategori FROM Yemekler")
+            sorgu = text("SELECT Yemek_Id, Yemek_Adı, Kalori_Kcal, Kategori FROM Yemekler")
             sonuc = connection.execute(sorgu)
             
-            # Gelen veriyi JSON formatına (sözlük yapısına) çevir
             yemek_listesi = [
                 {"id": satir.Yemek_Id, "isim": satir.Yemek_Adı, "kalori": satir.Kalori_Kcal, "kategori": satir.Kategori} 
                 for satir in sonuc
@@ -50,10 +58,9 @@ def yemekleri_getir():
             return {"basari": True, "veri": yemek_listesi}
             
     except Exception as e:
-        # Eğer veritabanı bağlantısında hata olursa uygulamayı çökertme, ekrana hatayı bas
         raise HTTPException(status_code=500, detail=f"Veritabanı hatası: {str(e)}")
     
-# 🧠 YENİ: YAPAY ZEKA (OPTİMİZASYON) UÇ NOKTASI
+# 🧠 YAPAY ZEKA (OPTİMİZASYON) UÇ NOKTASI
 @app.get("/api/diyet-hazirla/{hedef_kalori}")
 def akilli_diyet_olustur(hedef_kalori: int):
     sonuc = diyet_olustur(hedef_kalori)
@@ -62,3 +69,19 @@ def akilli_diyet_olustur(hedef_kalori: int):
         return sonuc
     else:
         raise HTTPException(status_code=400, detail=sonuc["mesaj"])
+
+# 👤 YENİ: KULLANICI OLUŞTURMA VE BMR HESAPLAMA UÇ NOKTASI
+@app.post("/api/kullanici-olustur")
+def yeni_kullanici_olustur(kullanici: KullaniciBilgileri):
+    try:
+        sonuc = kullanici_kaydet(
+            ad=kullanici.ad,
+            cinsiyet=kullanici.cinsiyet,
+            yas=kullanici.yas,
+            boy_cm=kullanici.boy_cm,
+            kilo_kg=kullanici.kilo_kg,
+            hareket_katsayisi=kullanici.hareket_katsayisi
+        )
+        return sonuc
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Kullanıcı kaydedilirken bir hata oluştu: {str(e)}")
