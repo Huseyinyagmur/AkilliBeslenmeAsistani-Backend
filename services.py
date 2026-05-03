@@ -14,7 +14,7 @@ params = urllib.parse.quote_plus(
 engine = create_engine(f'mssql+pyodbc:///?odbc_connect={params}')
 
 def diyet_olustur(hedef_kalori: int):
-    # --- YARDIMCI KATEGORİ FONKSİYONLARI (Kelimeleri Genişlettik) ---
+    # --- YARDIMCI KATEGORİ FONKSİYONLARI ---
     def ana_yemek_mi(y):
         k, i = y["kategori"].lower(), y["isim"].lower()
         if k in ["ana yemek", "fast food"]: return True
@@ -22,8 +22,20 @@ def diyet_olustur(hedef_kalori: int):
 
     def yumurta_mi(y): return any(w in y["isim"].lower() for w in ["yumurta", "omlet", "menemen", "çılbır", "sahanda"])
     def hamur_isi_mi(y): return any(w in y["isim"].lower() for w in ["ekmek", "börek", "borek", "pide", "simit", "açma", "poğaça", "tost", "lavaş", "bazlama", "yulaf", "gevrek"])
-    def icecek_mi(y): return "içecek" in y["kategori"].lower() or "icecek" in y["kategori"].lower() or any(w in y["isim"].lower() for w in ["su ", "shake", "nektar", "ayran", "kahve", "çay", "cay", "soda", "kola", "milkshake", "meyve suyu"])
-    def meyve_kuruyemis_mi(y): return y["kategori"].lower() in ["meyve", "kuruyemiş", "kuruyemis"] or any(w in y["isim"].lower() for w in ["fıstık", "badem", "ceviz", "elma", "muz", "kuru", "hurma", "incir", "kayısı", "leblebi", "meyve", "fındık"])
+    
+    # 1. İçecekler listesine Fanta, Gazoz, Limonata eklendi!
+    def icecek_mi(y): 
+        k, i = y["kategori"].lower(), y["isim"].lower()
+        if "içecek" in k or "icecek" in k: return True
+        return any(w in i for w in ["su ", "shake", "nektar", "ayran", "kahve", "çay", "cay", "soda", "kola", "fanta", "gazoz", "milkshake", "meyve suyu", "kefir", "limonata", "şalgam", "ice tea"])
+
+    # 2. FANTA HİLESİ ÇÖZÜMÜ: Eğer bir ürün içecekse, içinde meyve geçse bile meyve sayma!
+    def meyve_kuruyemis_mi(y): 
+        if icecek_mi(y): return False # Fanta'yı veya Çilekli Kefir'i anında eler!
+        
+        k, i = y["kategori"].lower(), y["isim"].lower()
+        if k in ["meyve", "kuruyemiş", "kuruyemis"]: return True
+        return any(w in i for w in ["fıstık", "badem", "ceviz", "elma", "muz", "kuru", "hurma", "incir", "kayısı", "leblebi", "meyve", "fındık", "mandalina", "portakal", "çilek", "kavun", "karpuz"])
 
     yemekler = []
     with engine.connect() as conn:
@@ -73,14 +85,34 @@ def diyet_olustur(hedef_kalori: int):
     sabah_kat = ["Kahvalti", "Kahvaltı", "Hamur İsi", "Hamur İşi", "Kahvaltılık"]
     ara_ogun_kat = ["Tatlı", "Tatli", "Meyve", "Atıştırmalık", "Atistirmalik", "İcecek", "İçecek", "Kuruyemis", "Kuruyemiş"]
 
-    # --- 1. KAHVALTI ZORUNLULUKLARI (Yumurta ve Hamur İşi Şart) ---
+    # 🌟 ÖĞÜN KALORİ DAĞILIMI (Geri Geldi!) 🌟
+    # Bu kural sayesinde yapay zeka kahvaltıyı 1000 kalori yapıp diğer öğünleri aç bırakamaz!
+    sabah_kalori = pulp.lpSum([yemek_degiskenleri[y["id"]] * y["kalori"] for y in yemekler if y["kategori"] in sabah_kat])
+    prob += sabah_kalori >= hedef_kalori * 0.15, "Min_Sabah_Kalori"
+    prob += sabah_kalori <= hedef_kalori * 0.35, "Max_Sabah_Kalori"
+
+    ogle_aksam_kalori = pulp.lpSum([yemek_degiskenleri[y["id"]] * y["kalori"] for y in yemekler if y["kategori"] not in sabah_kat and y["kategori"] not in ara_ogun_kat])
+    prob += ogle_aksam_kalori >= hedef_kalori * 0.45, "Min_OgleAksam_Kalori"
+    prob += ogle_aksam_kalori <= hedef_kalori * 0.75, "Max_OgleAksam_Kalori"
+
+    # --- 1. KAHVALTI ZORUNLULUKLARI VE KISITLAMALARI ---
+    sabah_degiskenleri = [yemek_degiskenleri[y["id"]] for y in yemekler if y["kategori"] in sabah_kat]
     sabah_yumurtalar = [yemek_degiskenleri[y["id"]] for y in yemekler if y["kategori"] in sabah_kat and yumurta_mi(y)]
     sabah_hamur = [yemek_degiskenleri[y["id"]] for y in yemekler if y["kategori"] in sabah_kat and hamur_isi_mi(y)]
+    sabah_peynirler = [yemek_degiskenleri[y["id"]] for y in yemekler if y["kategori"] in sabah_kat and "peynir" in y["isim"].lower()]
+    sabah_tatlilar = [yemek_degiskenleri[y["id"]] for y in yemekler if y["kategori"] in sabah_kat and any(k in y["isim"].lower() for k in ["bal", "reçel", "recel", "pekmez", "çikolata"])]
     
+    # Demir Yumruk Kuralları:
     if sabah_yumurtalar: prob += pulp.lpSum(sabah_yumurtalar) >= 1, "Kesin_Min_1_Yumurta"
-    if sabah_hamur: 
-        prob += pulp.lpSum(sabah_hamur) >= 1, "Kesin_Min_1_Ekmek_Turu"
-        prob += pulp.lpSum(sabah_hamur) <= 2, "Max_2_Ekmek_Turu"
+    if sabah_hamur: prob += pulp.lpSum(sabah_hamur) == 1, "Kesin_1_Cesit_Ekmek_Borek" # SADECE 1 çeşit hamur işi (Ekmek veya Börek)
+    if sabah_peynirler: prob += pulp.lpSum(sabah_peynirler) <= 1, "Max_1_Cesit_Peynir" # 2 Çeşit peynir yasak
+    if sabah_tatlilar: prob += pulp.lpSum(sabah_tatlilar) <= 1, "Max_1_Cesit_Tatli" # Reçel ve Bal aynı anda yasak
+    if sabah_degiskenleri: prob += pulp.lpSum(sabah_degiskenleri) <= 5, "Max_5_Kalem_Kahvalti" # Menü kalabalık olmasın
+
+    # Kahvaltıda "Duble Porsiyon (2x)" Yasağı (Sadece Ekmek 2 dilim olabilir, menemen/reçel olamaz)
+    for y in yemekler:
+        if y["kategori"] in sabah_kat and "ekmek" not in y["isim"].lower():
+            prob += yemek_degiskenleri[y["id"]] <= 1, f"Sabah_Duble_Yasak_{y['id']}"
 
     # --- 2. ÖĞLE VE AKŞAM (Tam 2 Ana Yemek, Tam 2 Yan Yemek Kesin Kuralı) ---
     ogle_aksam_ana = [yemek_degiskenleri[y["id"]] for y in yemekler if y["kategori"] not in sabah_kat and y["kategori"] not in ara_ogun_kat and ana_yemek_mi(y)]
@@ -89,8 +121,7 @@ def diyet_olustur(hedef_kalori: int):
     if ogle_aksam_ana: prob += pulp.lpSum(ogle_aksam_ana) == 2, "Kesin_2_Ana_Yemek"
     if ogle_aksam_yan: prob += pulp.lpSum(ogle_aksam_yan) == 2, "Kesin_2_Yan_Yemek"
 
-    # FERMUAR(ZIPPER) HİLESİNİ ENGELLEME: Öğle ve Akşam menüsünde Duble Porsiyon KESİNLİKLE YASAK!
-    # Bu sayede her bir yemek tekil olarak seçilir, listeye tam 4 farklı yemek girer.
+    # Öğle ve Akşam Yemeklerinde Duble Porsiyon (2x) Kesinlikle Yasak!
     for y in yemekler:
         if y["kategori"] not in sabah_kat and y["kategori"] not in ara_ogun_kat:
             prob += yemek_degiskenleri[y["id"]] <= 1, f"OgleAksam_Duble_Yasak_{y['id']}"
@@ -104,12 +135,15 @@ def diyet_olustur(hedef_kalori: int):
     if ara_icecekler: prob += pulp.lpSum(ara_icecekler) <= 1, "Max_1_Icecek"
     if ara_tumu: prob += pulp.lpSum(ara_tumu) <= 2, "Max_2_Ara_Ogun_Parca"
 
-    # --- 4. AĞIRLIK FRENLERİ (Eski Kısıtlamalarımız) ---
+    # --- 4. AĞIRLIK FRENLERİ (Sıkıcı diyet kuralları) ---
     kirmizi_etler = [yemek_degiskenleri[y["id"]] for y in yemekler if any(k in y["isim"].lower() for k in ["köfte", "et", "kıyma", "kebap", "döner", "kavurma", "tantuni", "dürüm", "kokoreç"])]
     if kirmizi_etler: prob += pulp.lpSum(kirmizi_etler) <= 1, "Max_1_Kirmizi_Et"
     
     agir_karblar = [yemek_degiskenleri[y["id"]] for y in yemekler if any(kelime in y["isim"].lower() for kelime in ["makarna", "pilav", "mantı", "manti", "patates"])]
     if agir_karblar: prob += pulp.lpSum(agir_karblar) <= 1, "Max_1_Agir_Karb"
+
+    fast_food = [yemek_degiskenleri[y["id"]] for y in yemekler if y["kategori"] in ["Fast Food"] or any(k in y["isim"].lower() for k in ["pizza", "burger", "tantuni", "kokoreç", "dürüm"])]
+    if fast_food: prob += pulp.lpSum(fast_food) <= 1, "Max_1_FastFood" # Günde sadece 1 defa kaçamak!
 
     corbalar = [yemek_degiskenleri[y["id"]] for y in yemekler if y["kategori"] in ["Çorba", "Corba"]]
     if corbalar: prob += pulp.lpSum(corbalar) <= 1, "Max_1_Corba"
@@ -136,7 +170,6 @@ def diyet_olustur(hedef_kalori: int):
                 if y_kopya["kategori"] in sabah_kat: ogunler["Sabah"].append(y_kopya)
                 elif y_kopya["kategori"] in ara_ogun_kat: ogunler["Ara_Öğün"].append(y_kopya)
                 else:
-                    # Çorba, Zeytinyağlı vb. ise Yan Yemek; Tavuk, Balık, Köfte ise Ana Yemek listesine at
                     if ana_yemek_mi(y_kopya): ogle_aksam_ana_secilen.append(y_kopya)
                     else: ogle_aksam_yan_secilen.append(y_kopya)
 
@@ -145,8 +178,7 @@ def diyet_olustur(hedef_kalori: int):
                 hesaplanan_karb += y_kopya["karb"]
                 hesaplanan_yag += y_kopya["yag"]
                 
-        # 🌟 İŞTE O KUSURSUZ FERMUAR SİSTEMİ 🌟
-        # Liste her zaman tam olarak şu şekilde oluşacak: [Ana Yemek, Yan Yemek, Ana Yemek, Yan Yemek]
+        # FERMUAR(ZIPPER) SİSTEMİ 
         ogle_aksam_birlestirilmis = []
         max_len = max(len(ogle_aksam_ana_secilen), len(ogle_aksam_yan_secilen))
         for i in range(max_len):
