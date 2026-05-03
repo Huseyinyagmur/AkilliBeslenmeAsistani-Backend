@@ -109,41 +109,46 @@ def diyet_olustur(hedef_kalori: int):
         prob += pulp.lpSum(ara_ogun_degiskenleri) >= 1, "Min_Ara_Ogun_Porsiyon"
         prob += pulp.lpSum(ara_ogun_degiskenleri) <= 2, "Max_Ara_Ogun_Porsiyon"
 
-# --- İNSANİ MANTIK KURALLARI (TİTANYUM YUMRUK) ---
+# --- İNSANİ MANTIK KURALLARI (VİBRANYUM KALKAN) ---
+    
     corbalar = [yemek_degiskenleri[y["id"]] for y in yemekler if y["kategori"] in ["Çorba", "Corba"]]
     if corbalar: prob += pulp.lpSum(corbalar) <= 1, "Max_1_Corba"
 
     tatlilar = [yemek_degiskenleri[y["id"]] for y in yemekler if y["kategori"] in ["Tatlı", "Tatli"]]
     if tatlilar: prob += pulp.lpSum(tatlilar) <= 1, "Max_1_Tatli"
 
-    # 1. KAHVALTIDA KALP KRİZİNE SON (Börek, Tost, Pide ve Kızartma aynı anda seçilemez)
+    # 1. KAHVALTIDA ŞEKER KOMASINI ÖNLE (Bal, reçel, pekmez toplamda max 1 porsiyon)
+    kahvalti_tatlilari = [yemek_degiskenleri[y["id"]] for y in yemekler if any(k in y["isim"].lower() for k in ["bal", "reçel", "recel", "pekmez", "nutella", "çikolata"])]
+    if kahvalti_tatlilari: prob += pulp.lpSum(kahvalti_tatlilari) <= 1, "Max_1_Kahvalti_Tatli"
+
+    # 2. TEMEL KAHVALTI ZORUNLULUĞU (Menüde kesinlikle Peynir veya Yumurta olmak ZORUNDA)
+    kahvalti_temel = [yemek_degiskenleri[y["id"]] for y in yemekler if any(k in y["isim"].lower() for k in ["peynir", "yumurta"])]
+    if kahvalti_temel: prob += pulp.lpSum(kahvalti_temel) >= 1, "Min_1_Kahvalti_Temel"
+
+    # 3. KAHVALTI AĞIRLIK SINIRI (Börek, kızartma vs.)
     kahvalti_agir = [yemek_degiskenleri[y["id"]] for y in yemekler if any(kelime in y["isim"].lower() for kelime in ["tost", "börek", "borek", "pide", "simit", "açma", "kızartma", "kizartma", "patates"])]
     if kahvalti_agir: prob += pulp.lpSum(kahvalti_agir) <= 1, "Max_1_Kahvalti_Agir"
 
-    # 2. KARBONHİDRAT KOMASINA SON (Aynı gün makarna, pilav, mantı 1'den fazla olamaz)
+    # 4. KESİN ANA YEMEK LİMİTİ (Pizza, Kokoreç, Somon, Beğendi... Hepsi 2 hakkın içinde!)
+    agir_ana_yemekler = [yemek_degiskenleri[y["id"]] for y in yemekler if y["kategori"] in ["Ana Yemek", "Fast Food"] or any(k in y["isim"].lower() for k in ["köfte", "et", "kıyma", "kebap", "döner", "kavurma", "tantuni", "dürüm", "kokoreç", "somon", "balık", "tavuk", "pizza", "burger", "beğendi", "şnitzel"])]
+    if agir_ana_yemekler:
+        prob += pulp.lpSum(agir_ana_yemekler) <= 2, "Max_2_Agir_Yemek_Gunluk" # Bütün gün SADECE 2 tane ağır yiyebilir.
+
+    # 5. SOKAK LEZZETLERİ FREN SİSTEMİ (Pizza + Kokoreç kombosunu parçalar)
+    sokak_lezzetleri = [yemek_degiskenleri[y["id"]] for y in yemekler if y["kategori"] in ["Fast Food"] or any(k in y["isim"].lower() for k in ["pizza", "burger", "kokoreç", "tantuni", "dürüm", "sosis"])]
+    if sokak_lezzetleri:
+        prob += pulp.lpSum(sokak_lezzetleri) <= 1, "Max_1_Sokak_Lezzeti" # Günde sadece 1 kaçamak yapabilir.
+
+    # 6. DENİZ ÜRÜNÜ & KIRMIZI ET ÇATIŞMASI (Somon ile Beğendiyi yan yana getirme!)
+    baliklar = [yemek_degiskenleri[y["id"]] for y in yemekler if any(k in y["isim"].lower() for k in ["somon", "balık", "hamsi", "levrek"])]
+    diger_etler = [yemek_degiskenleri[y["id"]] for y in yemekler if any(k in y["isim"].lower() for k in ["tavuk", "et", "köfte", "kavurma", "kıyma", "beğendi", "kebap"])]
+    for b in baliklar:
+        for e in diger_etler:
+            prob += b + e <= 1, f"Balik_Et_Uyumsuzlugu_{b}_{e}"
+
+    # 7. AĞIR KARB FRENİ (Makarna, Pilav)
     agir_karblar = [yemek_degiskenleri[y["id"]] for y in yemekler if any(kelime in y["isim"].lower() for kelime in ["makarna", "pilav", "mantı", "manti"])]
     if agir_karblar: prob += pulp.lpSum(agir_karblar) <= 1, "Max_1_Agir_Karb"
-    
-    # 3. KASAP ENGELLEYİCİ - GÜNCELLENDİ (Kavurma, Tantuni ve Dürüm kaçakları kapatıldı!)
-    kirmizi_etler = [yemek_degiskenleri[y["id"]] for y in yemekler if any(kelime in y["isim"].lower() for kelime in ["köfte", "kofte", "et", "kıyma", "kebap", "döner", "kavurma", "tantuni", "dürüm", "durum"])]
-    if kirmizi_etler: prob += pulp.lpSum(kirmizi_etler) <= 1, "Max_1_Kirmizi_Et"
-
-    # 4. GIDAKLAMA ENGELLEYİCİ
-    tavuklu_yemekler = [yemek_degiskenleri[y["id"]] for y in yemekler if "tavuk" in y["isim"].lower()]
-    if tavuklu_yemekler: prob += pulp.lpSum(tavuklu_yemekler) <= 1, "Max_1_Tavuklu_Yemek"
-
-    # 5. PROTEİN TOZU BAĞIMLILIĞI ÇÖZÜMÜ (Shake ve Barlar sadece 1 porsiyon olabilir)
-    ek_gidalar = [yemek_degiskenleri[y["id"]] for y in yemekler if any(k in y["isim"].lower() for k in ["shake", "bar", "tozu"])]
-    if ek_gidalar: prob += pulp.lpSum(ek_gidalar) <= 1, "Max_1_Ek_Gida"
-
-    # 6. KÜLTÜREL ÇATIŞMAYI ÖNLE (Bamya ile Pizza, Fast Food ile Sulu Yemek yan yana gelemez!)
-    fast_foodlar = [yemek_degiskenleri[y["id"]] for y in yemekler if y["kategori"] in ["Fast Food"] or any(k in y["isim"].lower() for k in ["pizza", "burger", "hamburger", "tantuni", "dürüm"])]
-    sulu_yemekler = [yemek_degiskenleri[y["id"]] for y in yemekler if y["kategori"] in ["Zeytinyağlı", "Sebze Yemeği", "Ev Yemeği"] or any(k in y["isim"].lower() for k in ["bamya", "fasulye", "nohut", "kapuska", "pırasa"])]
-    
-    # Fast Food'lardan biri seçildiyse, sulu yemeklerin hiçbiri seçilemez (Mutually Exclusive)
-    for f in fast_foodlar:
-        for s in sulu_yemekler:
-            prob += f + s <= 1, f"Uyumsuzluk_{f}_{s}"
 
     prob.solve(pulp.PULP_CBC_CMD(msg=False))
     
