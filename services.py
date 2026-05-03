@@ -16,7 +16,6 @@ engine = create_engine(f'mssql+pyodbc:///?odbc_connect={params}')
 def diyet_olustur(hedef_kalori: int):
     yemekler = []
     with engine.connect() as conn:
-        # 1. Sütun adını Olcu_Birimi olarak güncelledik
         sorgu = text("""
             SELECT Yemek_Id, Yemek_Adı, Olcu_Birimi, Kalori_Kcal, Kategori, 
                    Protein_g, Karbonhidrat_g, Yag_g 
@@ -28,10 +27,7 @@ def diyet_olustur(hedef_kalori: int):
         """)
         sonuc = conn.execute(sorgu)
         for row in sonuc:
-            # 2. Burada da row.Olcu_Birimi olarak çekiyoruz
             porsiyon = row.Olcu_Birimi if row.Olcu_Birimi else ""
-            
-            # Porsiyon ile ismi birleştir (Örn: "1 Dilim" + " " + "Kaşarlı Tost")
             tam_isim = f"{porsiyon} {row.Yemek_Adı}".strip()
 
             yemekler.append({
@@ -43,17 +39,18 @@ def diyet_olustur(hedef_kalori: int):
                 "karb": float(row.Karbonhidrat_g),
                 "yag": float(row.Yag_g)
             })
-        
-    # Makro Hedefleri (Standart %30 Protein, %40 Karb, %30 Yağ dağılımı)
+    
     hedef_protein_g = (hedef_kalori * 0.30) / 4
     hedef_karb_g = (hedef_kalori * 0.40) / 4
     hedef_yag_g = (hedef_kalori * 0.30) / 9
 
     prob = pulp.LpProblem("Ogunlu_Makro_Dengeli_Diyet", pulp.LpMinimize)
-    yemek_degiskenleri = pulp.LpVariable.dicts("Yemek", [y["id"] for y in yemekler], cat='Binary')
+    
+    # 🌟 YAPAY ZEKANIN SINIF ATLADIĞI YER: Artık Binary değil, Integer! (Max 2 porsiyon)
+    yemek_degiskenleri = pulp.LpVariable.dicts("Yemek", [y["id"] for y in yemekler], lowBound=0, upBound=2, cat='Integer')
     prob += 0, "Amac"
     
-    # 1. ESNEK KALORİ VE MAKRO KISITLARI (Çeşitlilik arttığı için esnekliği açtık)
+    # Kalori ve Makro Kısıtları
     toplam_kalori = pulp.lpSum([yemek_degiskenleri[y["id"]] * y["kalori"] for y in yemekler])
     prob += toplam_kalori >= hedef_kalori - 250, "Min_Kalori"
     prob += toplam_kalori <= hedef_kalori + 250, "Max_Kalori"
@@ -70,118 +67,72 @@ def diyet_olustur(hedef_kalori: int):
     prob += toplam_yag >= hedef_yag_g - 25, "Min_Yag"
     prob += toplam_yag <= hedef_yag_g + 25, "Max_Yag"
 
-    # 2. KATEGORİ LİSTELERİ (Genişletildi)
+    # 🌟 KATEGORİ KAÇAĞINI ÖNLEYEN YENİ MANTIK
     sabah_kat = ["Kahvalti", "Kahvaltı", "Hamur İsi", "Hamur İşi", "Kahvaltılık"]
-    ana_ogun_kat = ["Ana Yemek", "Çorba", "Corba", "Fast Food", "Salata", "Meze", "ZeytinYagli", "Zeytinyağlı"]
     ara_ogun_kat = ["Tatlı", "Tatli", "Meyve", "Atıştırmalık", "Atistirmalik", "İcecek", "İçecek", "Kuruyemis", "Kuruyemiş"]
 
-    # Değişkenleri Öğünlere Göre Filtreleme
     sabah_degiskenleri = [yemek_degiskenleri[y["id"]] for y in yemekler if y["kategori"] in sabah_kat]
-    ana_ogun_degiskenleri = [yemek_degiskenleri[y["id"]] for y in yemekler if y["kategori"] in ana_ogun_kat]
     ara_ogun_degiskenleri = [yemek_degiskenleri[y["id"]] for y in yemekler if y["kategori"] in ara_ogun_kat]
+    # Geri kalan HER ŞEY ana öğündür (Çorba, Zeytinyağlı, Ev Yemeği vs. kaçamaz)
+    ana_ogun_degiskenleri = [yemek_degiskenleri[y["id"]] for y in yemekler if y["kategori"] not in sabah_kat and y["kategori"] not in ara_ogun_kat]
 
-    # 3. YENİ NESİL ÖĞÜN KURALLARI (Mükemmel Tabak Tasarımı)
-    
-    # KAHVALTI: Serpme mantığı (En az 3, en fazla 5 parça - Örn: Yumurta, Peynir, Zeytin, Ekmek)
+    # --- PORSİYON VE ÇEŞİT KISITLAMALARI ---
     if sabah_degiskenleri:
-        prob += pulp.lpSum(sabah_degiskenleri) >= 3, "Min_Sabah_Cesit"
-        prob += pulp.lpSum(sabah_degiskenleri) <= 5, "Max_Sabah_Cesit"
+        prob += pulp.lpSum(sabah_degiskenleri) >= 3, "Min_Sabah_Porsiyon"
+        prob += pulp.lpSum(sabah_degiskenleri) <= 5, "Max_Sabah_Porsiyon"
 
-    # ÖĞLE VE AKŞAM (Birlikte): Toplamda en az 3, en fazla 6 çeşit (Örn: 2 Ana Yemek, 1 Çorba, 1 Salata vb.)
     if ana_ogun_degiskenleri:
-        prob += pulp.lpSum(ana_ogun_degiskenleri) >= 3, "Min_Ana_Ogun_Cesit"
-        prob += pulp.lpSum(ana_ogun_degiskenleri) <= 6, "Max_Ana_Ogun_Cesit"
+        # Porsiyonlar büyüdüğü için çeşitliliği iyice kıstık! (Öğle + Akşam toplamı max 4 parça)
+        prob += pulp.lpSum(ana_ogun_degiskenleri) >= 2, "Min_Ana_Ogun_Porsiyon"
+        prob += pulp.lpSum(ana_ogun_degiskenleri) <= 4, "Max_Ana_Ogun_Porsiyon"
 
-    # ARA ÖĞÜN: En az 1, en fazla 2 parça (Örn: Elma + Kuruyemiş)
     if ara_ogun_degiskenleri:
-        prob += pulp.lpSum(ara_ogun_degiskenleri) >= 1, "Min_Ara_Ogun_Cesit"
-        prob += pulp.lpSum(ara_ogun_degiskenleri) <= 2, "Max_Ara_Ogun_Cesit"
+        prob += pulp.lpSum(ara_ogun_degiskenleri) >= 1, "Min_Ara_Ogun_Porsiyon"
+        prob += pulp.lpSum(ara_ogun_degiskenleri) <= 2, "Max_Ara_Ogun_Porsiyon"
 
-    # AĞIR YEMEK KONTROLÜ: Günü 1 Ana Yemekle geçiştirmesin, Öğle ve Akşam için toplam 1-2 ağır yemek seçebilsin
-    agir_yemekler = [y["id"] for y in yemekler if y["kategori"] in ["Ana Yemek", "Fast Food"]]
-    if agir_yemekler:
-        prob += pulp.lpSum([yemek_degiskenleri[y_id] for y_id in agir_yemekler]) >= 1, "Min_Bir_Agir_Yemek"
-        prob += pulp.lpSum([yemek_degiskenleri[y_id] for y_id in agir_yemekler]) <= 2, "Max_Iki_Agir_Yemek"
-
-
-    # ----- İNSANİ MANTIK KURALLARI (Saçmalıkları Önleme) -----
-
-    # 1. Günde en fazla 1 Çorba içilsin
+    # --- İNSANİ MANTIK KURALLARI ---
     corbalar = [yemek_degiskenleri[y["id"]] for y in yemekler if y["kategori"] in ["Çorba", "Corba"]]
-    if corbalar:
-        prob += pulp.lpSum(corbalar) <= 1, "Max_1_Corba"
+    if corbalar: prob += pulp.lpSum(corbalar) <= 1, "Max_1_Corba"
 
-    # 2. Ara öğünde 2 tane içecek üst üste verilmesin (Günde max 1 içecek)
-    icecekler = [yemek_degiskenleri[y["id"]] for y in yemekler if y["kategori"] in ["İcecek", "İçecek"]]
-    if icecekler:
-        prob += pulp.lpSum(icecekler) <= 1, "Max_1_Icecek"
-
-    # 3. Günde en fazla 1 Tatlı yensin (Şeker komasına girmesin)
     tatlilar = [yemek_degiskenleri[y["id"]] for y in yemekler if y["kategori"] in ["Tatlı", "Tatli"]]
-    if tatlilar:
-        prob += pulp.lpSum(tatlilar) <= 1, "Max_1_Tatli"
+    if tatlilar: prob += pulp.lpSum(tatlilar) <= 1, "Max_1_Tatli"
 
-    # 4. Ana Yemek yığılmasını önle (Maksimum 2 ağır ana yemek seçilsin - Öğle 1, Akşam 1 gibi)
-    ana_yemekler = [yemek_degiskenleri[y["id"]] for y in yemekler if y["kategori"] == "Ana Yemek"]
-    if ana_yemekler:
-        prob += pulp.lpSum(ana_yemekler) <= 2, "Max_2_AnaYemek"
-        
-    # 5. Makarna / Pilav (Karbonhidrat) yığılmasını önle (Öğlen makarna, akşam pilav vermesin)
-    # Not: Veritabanında pilav/makarna "Ana Yemek" veya başka kategorideyken, isimden yakalayabiliriz:
-    karb_bombalari = [yemek_degiskenleri[y["id"]] for y in yemekler if "Makarna" in y["isim"] or "Pilav" in y["isim"]]
-    if karb_bombalari:
-        prob += pulp.lpSum(karb_bombalari) <= 1, "Max_1_Pilav_Veya_Makarna"
-# 6. Kahvaltıda Hamur İşi / Ekmek Yığılmasını Önle (GELİŞMİŞ TÜRKÇE KONTROLÜ)
-    kahvalti_karb = [
-        yemek_degiskenleri[y["id"]] for y in yemekler 
-        if any(kelime in y["isim"].lower() for kelime in [
-            "tost", "börek", "borek", "böreg", "boreg", 
-            "pide", "simit", "ekmek", "ekmeg", 
-            "açma", "acma", "poğaça", "pogaca", "gözleme"
-        ])
-    ]
-    if kahvalti_karb:
-        prob += pulp.lpSum(kahvalti_karb) <= 1, "Max_1_Kahvalti_Hamur_Isi"
+    kahvalti_karb = [yemek_degiskenleri[y["id"]] for y in yemekler if any(kelime in y["isim"].lower() for kelime in ["tost", "börek", "borek", "böreg", "boreg", "pide", "simit", "ekmek", "ekmeg", "açma", "acma", "poğaça", "pogaca", "gözleme"])]
+    if kahvalti_karb: prob += pulp.lpSum(kahvalti_karb) <= 2, "Max_2_Kahvalti_Hamur_Isi" # 2500 kcal için 2 dilim ekmek yiyebilsin
 
-    # 7. Yoğurt Türevi Yığılmasını Önle (Öğlen hem Cacık hem Yoğurt vermesin)
-    sut_urunleri = [yemek_degiskenleri[y["id"]] for y in yemekler if any(kelime in y["isim"] for kelime in ["Yoğurt", "Yogurt", "Cacık", "Cacik", "Ayran"])]
-    if sut_urunleri:
-        prob += pulp.lpSum(sut_urunleri) <= 1, "Max_1_Sut_Urunu"
-
-    # 8. Çift Salata Saçmalığını Önle (Ton balıklı salata + Tavuklu salata yan yana gelmesin)
-    salatalar = [yemek_degiskenleri[y["id"]] for y in yemekler if "Salata" in y["isim"] or y["kategori"] == "Salata"]
-    if salatalar:
-        prob += pulp.lpSum(salatalar) <= 1, "Max_1_Salata"
-        
-    # 9. Peynir Yığılmasını Önle (Kaşar Peyniri + Beyaz Peynir + Tulum Peyniri doldurmasın)
-    peynirler = [yemek_degiskenleri[y["id"]] for y in yemekler if "Peynir" in y["isim"]]
-    if peynirler:
-        prob += pulp.lpSum(peynirler) <= 1, "Max_1_Peynir"
-    # ----------------------------------------------------------
-    # Modeli Çöz
     prob.solve(pulp.PULP_CBC_CMD(msg=False))
     
-    ogunler = {
-        "Sabah": [],
-        "Öğle_ve_Akşam": [],
-        "Ara_Öğün": []
-    }
+    ogunler = { "Sabah": [], "Öğle_ve_Akşam": [], "Ara_Öğün": [] }
     hesaplanan_kalori, hesaplanan_protein, hesaplanan_karb, hesaplanan_yag = 0.0, 0.0, 0.0, 0.0
     
     if pulp.LpStatus[prob.status] == 'Optimal':
         for y in yemekler:
-            if yemek_degiskenleri[y["id"]].varValue == 1.0:
-                if y["kategori"] in sabah_kat:
-                    ogunler["Sabah"].append(y)
-                elif y["kategori"] in ara_ogun_kat:
-                    ogunler["Ara_Öğün"].append(y)
-                else:
-                    ogunler["Öğle_ve_Akşam"].append(y)
+            secilen_miktar = int(yemek_degiskenleri[y["id"]].varValue) # 0, 1 veya 2 dönecek
+            
+            if secilen_miktar > 0:
+                y_kopya = y.copy() # Referans hatası olmasın diye kopyalıyoruz
+                
+                # Eğer 2 porsiyon seçtiyse ismin başına "2 x" ekle ve makroları çarp
+                if secilen_miktar > 1:
+                    y_kopya["isim"] = f"{secilen_miktar} x {y['isim']}"
+                
+                y_kopya["kalori"] *= secilen_miktar
+                y_kopya["protein"] *= secilen_miktar
+                y_kopya["karb"] *= secilen_miktar
+                y_kopya["yag"] *= secilen_miktar
 
-                hesaplanan_kalori += y["kalori"]
-                hesaplanan_protein += y["protein"]
-                hesaplanan_karb += y["karb"]
-                hesaplanan_yag += y["yag"]
+                # Çoğaltılmış veya tekil yemeği ilgili öğüne ekle
+                if y_kopya["kategori"] in sabah_kat:
+                    ogunler["Sabah"].append(y_kopya)
+                elif y_kopya["kategori"] in ara_ogun_kat:
+                    ogunler["Ara_Öğün"].append(y_kopya)
+                else:
+                    ogunler["Öğle_ve_Akşam"].append(y_kopya)
+
+                hesaplanan_kalori += y_kopya["kalori"]
+                hesaplanan_protein += y_kopya["protein"]
+                hesaplanan_karb += y_kopya["karb"]
+                hesaplanan_yag += y_kopya["yag"]
                 
         return {
             "durum": "Başarılı",
@@ -195,7 +146,7 @@ def diyet_olustur(hedef_kalori: int):
             "ogunler": ogunler
         }
     else:
-        return {"durum": "Başarısız", "mesaj": "Bu kaloriye ve makro hedeflerine uygun mantıklı bir menü bulunamadı."}
+        return {"durum": "Başarısız", "mesaj": "Bu hedeflere uygun menü bulunamadı. Lütfen veritabanına daha fazla yemek ekleyin."}
 
 def bmr_ve_kalori_hesapla(cinsiyet: str, yas: int, boy_cm: float, kilo_kg: float, hareket_katsayisi: float, hedef: str):
     # Mifflin-St Jeor Formülü
