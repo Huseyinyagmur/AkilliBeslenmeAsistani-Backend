@@ -1,7 +1,7 @@
 import pulp
 from sqlalchemy import create_engine, text
 import urllib
-
+import random
 server_adi = 'LAPTOP-V013QBHO' 
 veritabani_adi = 'DiyetAppDB' 
 
@@ -21,7 +21,7 @@ def diyet_olustur(hedef_kalori: int):
         return any(w in i for w in ["et ", "etli", "tavuk", "balık", "somon", "köfte", "kofte", "kıyma", "kavurma", "tantuni", "kebap", "döner", "pizza", "burger", "hamburger", "şiş", "hamsi", "levrek", "şnitzel", "kokoreç", "ciğer", "kuzu", "dana"])
 
     def yumurta_mi(y): return any(w in y["isim"].lower() for w in ["yumurta", "omlet", "menemen", "çılbır", "sahanda"])
-    def hamur_isi_mi(y): return any(w in y["isim"].lower() for w in ["ekmek", "börek", "borek", "pide", "simit", "açma", "poğaça", "tost", "lavaş", "bazlama", "yulaf", "gevrek"])
+    def hamur_isi_mi(y): return any(w in y["isim"].lower() for w in ["ekmek", "ekmeg", "börek", "borek", "böreg", "boreg", "pide", "simit", "açma", "poğaça", "tost", "lavaş", "bazlama", "yulaf", "gevrek"])
     
     # 🌟 İÇECEK KALKANI (Süt, Maden Suyu, Şişe, Bardak, Kutu eklendi!) 🌟
     def icecek_mi(y): 
@@ -71,8 +71,42 @@ def diyet_olustur(hedef_kalori: int):
 
     prob = pulp.LpProblem("Ogunlu_Makro_Dengeli_Diyet", pulp.LpMinimize)
     yemek_degiskenleri = pulp.LpVariable.dicts("Yemek", [y["id"] for y in yemekler], lowBound=0, upBound=2, cat='Integer')
-    prob += 0, "Amac"
+    # 🌟 1. RASTGELELİK EKLENDİ (Hep aynı yemeği verme sorununu çözer!) 🌟
+    # prob += 0, "Amac"  <-- Eski sıfır amacını SİL, yerine alttakini yaz:
+    prob += pulp.lpSum([yemek_degiskenleri[y["id"]] * random.uniform(0.1, 1.0) for y in yemekler]), "Amac_Rastgele_Cesitlilik"
+    # ... (Yukarıdaki kısımlar aynı) ...
+
+    # Makro kısıtlamaları (prob += pulp.lpSum...) bittikten sonraki kısım:
+
+    sabah_kat = ["Kahvalti", "Kahvaltı", "Hamur İsi", "Hamur İşi", "Kahvaltılık"]
+    ara_ogun_kat = ["Tatlı", "Tatli", "Meyve", "Atıştırmalık", "Atistirmalik", "İcecek", "İçecek", "Kuruyemis", "Kuruyemiş"]
+
+    # 🌟 BURASI YENİ YERİMİZ: Kategoriler tanımlandıktan SONRA bu 3 kuralı koyuyoruz! 🌟
     
+    # 1. RASTGELELİK EKLENDİ
+    prob += pulp.lpSum([yemek_degiskenleri[y["id"]] * random.uniform(0.1, 1.0) for y in yemekler]), "Amac_Rastgele_Cesitlilik"
+
+    # 2. ARA ÖĞÜN KALORİ FRENİ (Artık ara_ogun_kat listesini tanıyor!)
+    ara_ogun_kalori = pulp.lpSum([yemek_degiskenleri[y["id"]] * y["kalori"] for y in yemekler if y["kategori"] in ara_ogun_kat])
+    prob += ara_ogun_kalori <= hedef_kalori * 0.15, "Max_Ara_Ogun_Kalori"
+
+    # 3. ÇİFTE BALIK YASAĞI
+    baliklar = [yemek_degiskenleri[y["id"]] for y in yemekler if any(k in y["isim"].lower() for k in ["somon", "balık", "hamsi", "levrek"])]
+    if baliklar: prob += pulp.lpSum(baliklar) <= 1, "Max_1_Balik_Gunluk"
+
+    # 🌟 ÖĞÜN KALORİ DAĞILIMI (Bunlar zaten vardı, altında durmaya devam etsin) 🌟
+    sabah_kalori = pulp.lpSum([yemek_degiskenleri[y["id"]] * y["kalori"] for y in yemekler if y["kategori"] in sabah_kat])
+    prob += sabah_kalori >= hedef_kalori * 0.15, "Min_Sabah_Kalori"
+    prob += sabah_kalori <= hedef_kalori * 0.35, "Max_Sabah_Kalori"
+    
+    # ... (Kodun geri kalanı aynı şekilde devam ediyor) ...
+    # 🌟 2. ARA ÖĞÜN KALORİ FRENİ (Katmer faciasını önler) 🌟
+    ara_ogun_kalori = pulp.lpSum([yemek_degiskenleri[y["id"]] * y["kalori"] for y in yemekler if y["kategori"] in ara_ogun_kat])
+    prob += ara_ogun_kalori <= hedef_kalori * 0.15, "Max_Ara_Ogun_Kalori"
+
+    # 🌟 3. ÇİFTE BALIK YASAĞI (Öğlen Somon, Akşam Hamsi yasak!) 🌟
+    baliklar = [yemek_degiskenleri[y["id"]] for y in yemekler if any(k in y["isim"].lower() for k in ["somon", "balık", "hamsi", "levrek"])]
+    if baliklar: prob += pulp.lpSum(baliklar) <= 1, "Max_1_Balik_Gunluk"    
     # Kalori ve Makro Kısıtları
     prob += pulp.lpSum([yemek_degiskenleri[y["id"]] * y["kalori"] for y in yemekler]) >= hedef_kalori - 250
     prob += pulp.lpSum([yemek_degiskenleri[y["id"]] * y["kalori"] for y in yemekler]) <= hedef_kalori + 250
