@@ -23,20 +23,24 @@ def diyet_olustur(hedef_kalori: int):
     def yumurta_mi(y): return any(w in y["isim"].lower() for w in ["yumurta", "omlet", "menemen", "çılbır", "sahanda"])
     def hamur_isi_mi(y): return any(w in y["isim"].lower() for w in ["ekmek", "börek", "borek", "pide", "simit", "açma", "poğaça", "tost", "lavaş", "bazlama", "yulaf", "gevrek"])
     
-    # 1. İçecekler listesine Fanta, Gazoz, Limonata eklendi!
+    # 🌟 İÇECEK KALKANI (Süt, Maden Suyu, Şişe, Bardak, Kutu eklendi!) 🌟
     def icecek_mi(y): 
         k, i = y["kategori"].lower(), y["isim"].lower()
         if "içecek" in k or "icecek" in k: return True
-        return any(w in i for w in ["su ", "shake", "nektar", "ayran", "kahve", "çay", "cay", "soda", "kola", "fanta", "gazoz", "milkshake", "meyve suyu", "kefir", "limonata", "şalgam", "ice tea"])
+        return any(w in i for w in [
+            "su", "shake", "nektar", "ayran", "kahve", "çay", "cay", 
+            "soda", "kola", "fanta", "gazoz", "milkshake", "meyve suyu", 
+            "kefir", "limonata", "şalgam", "ice tea", "süt", "maden suyu",
+            "şişe", "bardak", "kutu", "kupa", "fincan", "shaker"
+        ])
 
-    # 2. FANTA HİLESİ ÇÖZÜMÜ: Eğer bir ürün içecekse, içinde meyve geçse bile meyve sayma!
+    # 🌟 MEYVE/KURUYEMİŞ KALKANI (İçecekse anında reddeder) 🌟
     def meyve_kuruyemis_mi(y): 
-        if icecek_mi(y): return False # Fanta'yı veya Çilekli Kefir'i anında eler!
+        if icecek_mi(y): return False # Şişe, Kutu veya Sıvı olan HİÇBİR ŞEY meyve sayılamaz!
         
         k, i = y["kategori"].lower(), y["isim"].lower()
         if k in ["meyve", "kuruyemiş", "kuruyemis"]: return True
         return any(w in i for w in ["fıstık", "badem", "ceviz", "elma", "muz", "kuru", "hurma", "incir", "kayısı", "leblebi", "meyve", "fındık", "mandalina", "portakal", "çilek", "kavun", "karpuz"])
-
     yemekler = []
     with engine.connect() as conn:
         sorgu = text("""
