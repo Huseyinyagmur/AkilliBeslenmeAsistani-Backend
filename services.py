@@ -22,8 +22,10 @@ def diyet_olustur(hedef_kalori: int):
         return any(w in i for w in ["et ", "etli", "tavuk", "balık", "somon", "köfte", "kofte", "kıyma", "kavurma", "tantuni", "kebap", "döner", "pizza", "burger", "hamburger", "şiş", "hamsi", "levrek", "şnitzel", "kokoreç", "ciğer", "kuzu", "dana", "iskender"])
 
     def yumurta_mi(y): return any(w in y["isim"].lower() for w in ["yumurta", "omlet", "menemen", "çılbır", "sahanda"])
-    def hamur_isi_mi(y): return any(w in y["isim"].lower() for w in ["ekmek", "ekmeg", "börek", "borek", "pide", "simit", "açma", "poğaça", "tost", "lavaş", "bazlama", "yulaf", "gevrek", "pişi", "kızartma", "pankek", "krep"])
     
+    # 🌟 PİDE BURADAN SİLİNDİ! Artık kahvaltı ekmeği sayılamaz. 🌟
+    # Kızartma, pişi ve pankek kelimelerini bu listeden sildik. Artık zorunlu olarak ekmek, simit veya börek arayacak.
+    def hamur_isi_mi(y): return any(w in y["isim"].lower() for w in ["ekmek", "ekmeg", "börek", "borek", "simit", "açma", "poğaça", "tost", "lavaş", "bazlama", "yulaf", "gevrek"])
     def icecek_mi(y): 
         k, i = y["kategori"].lower(), y["isim"].lower()
         if "içecek" in k or "icecek" in k: return True
@@ -32,10 +34,13 @@ def diyet_olustur(hedef_kalori: int):
     def meyve_kuruyemis_mi(y): 
         if icecek_mi(y): return False 
         k, i = y["kategori"].lower(), y["isim"].lower()
+        
+        # 🌟 YENİ KALKAN: Dondurma, pasta, çikolata vb. kesinlikle meyve sayılamaz! 🌟
+        if k in ["tatlı", "tatli"] or any(w in i for w in ["dondurma", "tatlı", "pasta", "kek", "çikolata"]): return False
+        
         if k in ["meyve", "kuruyemiş", "kuruyemis"]: return True
         return any(w in i for w in ["fıstık", "badem", "ceviz", "elma", "muz", "kuru", "hurma", "incir", "kayısı", "leblebi", "meyve", "fındık", "mandalina", "portakal", "çilek", "kavun", "karpuz"])
 
-    # 🌟 YENİ KURAL: LOKANTA USULÜ YAN YEMEK (Sadece Çorba, Salata, Yoğurt) 🌟
     def hafif_yan_mi(y):
         k, i = y["kategori"].lower(), y["isim"].lower()
         if k in ["çorba", "corba", "salata", "meze"]: return True
@@ -69,13 +74,11 @@ def diyet_olustur(hedef_kalori: int):
     prob = pulp.LpProblem("Ogunlu_Makro_Dengeli_Diyet", pulp.LpMinimize)
     yemek_degiskenleri = pulp.LpVariable.dicts("Yemek", [y["id"] for y in yemekler], lowBound=0, upBound=2, cat='Integer')
     
-    # 🌟 ÇILGIN RASTGELELİK (Levrek/Barbunya Kısır Döngüsünü Kırar!) 🌟
     prob += pulp.lpSum([yemek_degiskenleri[y["id"]] * random.uniform(1, 100) for y in yemekler]), "Amac_Rastgele_Cesitlilik"
 
     sabah_kat = ["Kahvalti", "Kahvaltı", "Hamur İsi", "Hamur İşi", "Kahvaltılık"]
     ara_ogun_kat = ["Tatlı", "Tatli", "Meyve", "Atıştırmalık", "Atistirmalik", "İcecek", "İçecek", "Kuruyemis", "Kuruyemiş"]
 
-    # 🌟 MAKRO NEFES ALANLARI GENİŞLETİLDİ (±60g tolerans) 🌟
     prob += pulp.lpSum([yemek_degiskenleri[y["id"]] * y["kalori"] for y in yemekler]) >= hedef_kalori - 250
     prob += pulp.lpSum([yemek_degiskenleri[y["id"]] * y["kalori"] for y in yemekler]) <= hedef_kalori + 250
     prob += pulp.lpSum([yemek_degiskenleri[y["id"]] * y["protein"] for y in yemekler]) >= hedef_protein_g - 60
@@ -85,7 +88,6 @@ def diyet_olustur(hedef_kalori: int):
     prob += pulp.lpSum([yemek_degiskenleri[y["id"]] * y["yag"] for y in yemekler]) >= hedef_yag_g - 35
     prob += pulp.lpSum([yemek_degiskenleri[y["id"]] * y["yag"] for y in yemekler]) <= hedef_yag_g + 35
 
-    # --- ÖĞÜN KALORİ DAĞILIMLARI ---
     sabah_kalori = pulp.lpSum([yemek_degiskenleri[y["id"]] * y["kalori"] for y in yemekler if y["kategori"] in sabah_kat])
     prob += sabah_kalori >= hedef_kalori * 0.15
     prob += sabah_kalori <= hedef_kalori * 0.35
@@ -97,15 +99,24 @@ def diyet_olustur(hedef_kalori: int):
     ara_ogun_kalori = pulp.lpSum([yemek_degiskenleri[y["id"]] * y["kalori"] for y in yemekler if y["kategori"] in ara_ogun_kat])
     prob += ara_ogun_kalori <= hedef_kalori * 0.15
 
-    # --- KAHVALTI KISITLAMALARI ---
+    # --- TÜRK KAHVALTISI STANDARDI ---
     sabah_degiskenleri = [yemek_degiskenleri[y["id"]] for y in yemekler if y["kategori"] in sabah_kat]
     sabah_yumurtalar = [yemek_degiskenleri[y["id"]] for y in yemekler if y["kategori"] in sabah_kat and yumurta_mi(y)]
     sabah_hamur = [yemek_degiskenleri[y["id"]] for y in yemekler if y["kategori"] in sabah_kat and hamur_isi_mi(y)]
-    sabah_peynirler = [yemek_degiskenleri[y["id"]] for y in yemekler if y["kategori"] in sabah_kat and "peynir" in y["isim"].lower()]
-    sabah_tatlilar = [yemek_degiskenleri[y["id"]] for y in yemekler if y["kategori"] in sabah_kat and any(k in y["isim"].lower() for k in ["bal", "reçel", "recel", "pekmez", "çikolata"])]
     
+    # 🌟 ZEYTİN, PEYNİR, DOMATES ZORUNLULUĞU (Gerçek kahvaltı kültürü) 🌟
+    sabah_klasikler = [yemek_degiskenleri[y["id"]] for y in yemekler if y["kategori"] in sabah_kat and any(k in y["isim"].lower() for k in ["peynir", "zeytin", "domates", "salatalık", "söğüş"])]
+    
+    # 🌟 PİDE VE LAHMACUN SABAH KESİNLİKLE YASAK! 🌟
+    sabah_yasaklilar = [yemek_degiskenleri[y["id"]] for y in yemekler if y["kategori"] in sabah_kat and any(k in y["isim"].lower() for k in ["pide", "lahmacun", "pizza", "hamburger", "döner", "mantı"])]
+    if sabah_yasaklilar: prob += pulp.lpSum(sabah_yasaklilar) == 0, "Sabah_Agir_Yasak"
+
     if sabah_yumurtalar: prob += pulp.lpSum(sabah_yumurtalar) >= 1
     if sabah_hamur: prob += pulp.lpSum(sabah_hamur) == 1
+    if sabah_klasikler: prob += pulp.lpSum(sabah_klasikler) >= 1, "Kesin_Klasik_Kahvaltilik"
+    
+    sabah_peynirler = [yemek_degiskenleri[y["id"]] for y in yemekler if y["kategori"] in sabah_kat and "peynir" in y["isim"].lower()]
+    sabah_tatlilar = [yemek_degiskenleri[y["id"]] for y in yemekler if y["kategori"] in sabah_kat and any(k in y["isim"].lower() for k in ["bal", "reçel", "recel", "pekmez", "çikolata"])]
     if sabah_peynirler: prob += pulp.lpSum(sabah_peynirler) <= 1
     if sabah_tatlilar: prob += pulp.lpSum(sabah_tatlilar) <= 1
     if sabah_degiskenleri: prob += pulp.lpSum(sabah_degiskenleri) <= 5
@@ -114,32 +125,33 @@ def diyet_olustur(hedef_kalori: int):
         if y["kategori"] in sabah_kat and "ekmek" not in y["isim"].lower():
             prob += yemek_degiskenleri[y["id"]] <= 1
 
-    # 🌟 LOKANTA STANDARDI (ÖĞLE VE AKŞAM) 🌟
+    # --- LOKANTA STANDARDI ---
     ogle_aksam_ana = [yemek_degiskenleri[y["id"]] for y in yemekler if y["kategori"] not in sabah_kat and y["kategori"] not in ara_ogun_kat and ana_yemek_mi(y)]
-    # Yeni kural: Yan yemek KESİNLİKLE Hafif Yan (Çorba/Salata/Yoğurt) olmak zorunda!
     ogle_aksam_hafif_yan = [yemek_degiskenleri[y["id"]] for y in yemekler if y["kategori"] not in sabah_kat and y["kategori"] not in ara_ogun_kat and hafif_yan_mi(y)]
-    
-    # Makarnalar, Barbunyalar, Patatesler (Ağır Karbonhidratlar) ayrı bir havuza alındı. Günde maksimum 1 tane çıkabilir!
     ogle_aksam_agir_karb = [yemek_degiskenleri[y["id"]] for y in yemekler if y["kategori"] not in sabah_kat and y["kategori"] not in ara_ogun_kat and not ana_yemek_mi(y) and not hafif_yan_mi(y)]
 
-    if ogle_aksam_ana: prob += pulp.lpSum(ogle_aksam_ana) == 2, "Kesin_2_Ana_Yemek"
-    if ogle_aksam_hafif_yan: prob += pulp.lpSum(ogle_aksam_hafif_yan) >= 2, "Kesin_Min_2_Corba_Salata"
-    if ogle_aksam_agir_karb: prob += pulp.lpSum(ogle_aksam_agir_karb) <= 1, "Max_1_Makarna_Barbunya_Gunluk"
+    if ogle_aksam_ana: prob += pulp.lpSum(ogle_aksam_ana) == 2
+    if ogle_aksam_hafif_yan: prob += pulp.lpSum(ogle_aksam_hafif_yan) >= 2
+    if ogle_aksam_agir_karb: prob += pulp.lpSum(ogle_aksam_agir_karb) <= 1
 
     for y in yemekler:
         if y["kategori"] not in sabah_kat and y["kategori"] not in ara_ogun_kat:
             prob += yemek_degiskenleri[y["id"]] <= 1
 
-    # --- ARA ÖĞÜN KISITLAMALARI ---
+    # --- ARA ÖĞÜN VE DONDURMA KISITLAMASI ---
     ara_meyveler = [yemek_degiskenleri[y["id"]] for y in yemekler if y["kategori"] in ara_ogun_kat and meyve_kuruyemis_mi(y)]
     ara_icecekler = [yemek_degiskenleri[y["id"]] for y in yemekler if y["kategori"] in ara_ogun_kat and icecek_mi(y)]
     ara_tumu = [yemek_degiskenleri[y["id"]] for y in yemekler if y["kategori"] in ara_ogun_kat]
+
+    # 🌟 DONDURMA VE TATLI FRENİ 🌟 (Çilekli + Karamelli dondurma rezaletini önler)
+    tum_tatlilar = [yemek_degiskenleri[y["id"]] for y in yemekler if y["kategori"].lower() in ["tatlı", "tatli"] or any(k in y["isim"].lower() for k in ["dondurma", "tatlı", "pasta", "kek", "çikolata", "gofret"])]
+    if tum_tatlilar: prob += pulp.lpSum(tum_tatlilar) <= 1, "Max_1_Tatli_Dondurma"
 
     if ara_meyveler: prob += pulp.lpSum(ara_meyveler) >= 1
     if ara_icecekler: prob += pulp.lpSum(ara_icecekler) <= 1
     if ara_tumu: prob += pulp.lpSum(ara_tumu) <= 2
 
-    # --- AĞIRLIK FRENLERİ VE ÇEŞİTLİLİK ---
+    # --- AĞIRLIK FRENLERİ ---
     baliklar = [yemek_degiskenleri[y["id"]] for y in yemekler if any(k in y["isim"].lower() for k in ["somon", "balık", "hamsi", "levrek"])]
     if baliklar: prob += pulp.lpSum(baliklar) <= 1
 
@@ -156,8 +168,8 @@ def diyet_olustur(hedef_kalori: int):
     
     if pulp.LpStatus[prob.status] == 'Optimal':
         ogle_aksam_ana_secilen = []
-        ogle_aksam_yan_secilen = [] # Bu artık Çorba ve Salata listesi
-        ogle_aksam_ekstra_karb = [] # Makarna, Pilav, Barbunya buraya
+        ogle_aksam_yan_secilen = []
+        ogle_aksam_ekstra_karb = []
 
         for y in yemekler:
             secilen_miktar = int(yemek_degiskenleri[y["id"]].varValue)
@@ -181,13 +193,11 @@ def diyet_olustur(hedef_kalori: int):
                 hesaplanan_karb += y_kopya["karb"]
                 hesaplanan_yag += y_kopya["yag"]
                 
-        # YENİ FERMUAR(ZIPPER) SİSTEMİ (Önce Ana Yemek + Salata/Çorba eşleşir)
         ogle_aksam_birlestirilmis = []
         for i in range(2):
             if i < len(ogle_aksam_ana_secilen): ogle_aksam_birlestirilmis.append(ogle_aksam_ana_secilen[i])
             if i < len(ogle_aksam_yan_secilen): ogle_aksam_birlestirilmis.append(ogle_aksam_yan_secilen[i])
         
-        # Eğer yüksek kaloriden dolayı Makarna/Barbunya seçildiyse (Günde max 1 tane) onu da öğlene ekler
         for ekstra in ogle_aksam_ekstra_karb:
             ogle_aksam_birlestirilmis.insert(2, ekstra) 
 
