@@ -19,13 +19,11 @@ def diyet_olustur(hedef_kalori: int):
     def ana_yemek_mi(y):
         k, i = y["kategori"].lower(), y["isim"].lower()
         if k in ["ana yemek", "fast food"]: return True
-        return any(w in i for w in ["et ", "etli", "tavuk", "balık", "somon", "köfte", "kofte", "kıyma", "kavurma", "tantuni", "kebap", "döner", "pizza", "burger", "hamburger", "şiş", "hamsi", "levrek", "şnitzel", "kokoreç", "ciğer", "kuzu", "dana", "iskender"])
+        return any(w in i for w in ["et ", "etli", "tavuk", "balık", "somon", "köfte", "kofte", "kıyma", "kavurma", "tantuni", "kebap", "döner", "pizza", "burger", "hamburger", "şiş", "hamsi", "levrek", "şnitzel", "kokoreç", "ciğer", "kuzu", "dana", "iskender", "biftek", "antrikot"])
 
     def yumurta_mi(y): return any(w in y["isim"].lower() for w in ["yumurta", "omlet", "menemen", "çılbır", "sahanda"])
-    
-    # 🌟 PİDE BURADAN SİLİNDİ! Artık kahvaltı ekmeği sayılamaz. 🌟
-    # Kızartma, pişi ve pankek kelimelerini bu listeden sildik. Artık zorunlu olarak ekmek, simit veya börek arayacak.
     def hamur_isi_mi(y): return any(w in y["isim"].lower() for w in ["ekmek", "ekmeg", "börek", "borek", "simit", "açma", "poğaça", "tost", "lavaş", "bazlama", "yulaf", "gevrek"])
+    
     def icecek_mi(y): 
         k, i = y["kategori"].lower(), y["isim"].lower()
         if "içecek" in k or "icecek" in k: return True
@@ -34,17 +32,9 @@ def diyet_olustur(hedef_kalori: int):
     def meyve_kuruyemis_mi(y): 
         if icecek_mi(y): return False 
         k, i = y["kategori"].lower(), y["isim"].lower()
-        
-        # 🌟 YENİ KALKAN: Dondurma, pasta, çikolata vb. kesinlikle meyve sayılamaz! 🌟
         if k in ["tatlı", "tatli"] or any(w in i for w in ["dondurma", "tatlı", "pasta", "kek", "çikolata"]): return False
-        
         if k in ["meyve", "kuruyemiş", "kuruyemis"]: return True
         return any(w in i for w in ["fıstık", "badem", "ceviz", "elma", "muz", "kuru", "hurma", "incir", "kayısı", "leblebi", "meyve", "fındık", "mandalina", "portakal", "çilek", "kavun", "karpuz"])
-
-    def hafif_yan_mi(y):
-        k, i = y["kategori"].lower(), y["isim"].lower()
-        if k in ["çorba", "corba", "salata", "meze"]: return True
-        return any(w in i for w in ["çorba", "corba", "salata", "yoğurt", "yogurt", "cacık", "ayran", "yeşillik", "piyaz"])
 
     yemekler = []
     with engine.connect() as conn:
@@ -103,22 +93,17 @@ def diyet_olustur(hedef_kalori: int):
     sabah_degiskenleri = [yemek_degiskenleri[y["id"]] for y in yemekler if y["kategori"] in sabah_kat]
     sabah_yumurtalar = [yemek_degiskenleri[y["id"]] for y in yemekler if y["kategori"] in sabah_kat and yumurta_mi(y)]
     sabah_hamur = [yemek_degiskenleri[y["id"]] for y in yemekler if y["kategori"] in sabah_kat and hamur_isi_mi(y)]
-    
-    # 🌟 ZEYTİN, PEYNİR, DOMATES ZORUNLULUĞU (Gerçek kahvaltı kültürü) 🌟
     sabah_klasikler = [yemek_degiskenleri[y["id"]] for y in yemekler if y["kategori"] in sabah_kat and any(k in y["isim"].lower() for k in ["peynir", "zeytin", "domates", "salatalık", "söğüş"])]
     
-
-# 🌟 YENİ KURAL: MASADA KESİN ÇAY OLACAK! (Kategorisi İçecek bile olsa bulur) 🌟
     sabah_cay = [yemek_degiskenleri[y["id"]] for y in yemekler if "çay" in y["isim"].lower()]
     if sabah_cay: prob += pulp.lpSum(sabah_cay) >= 1, "Kesin_Cay_Kahvalti"
 
-    # 🌟 PİDE VE LAHMACUN SABAH KESİNLİKLE YASAK! 🌟
     sabah_yasaklilar = [yemek_degiskenleri[y["id"]] for y in yemekler if y["kategori"] in sabah_kat and any(k in y["isim"].lower() for k in ["pide", "lahmacun", "pizza", "hamburger", "döner", "mantı"])]
     if sabah_yasaklilar: prob += pulp.lpSum(sabah_yasaklilar) == 0, "Sabah_Agir_Yasak"
 
     if sabah_yumurtalar: prob += pulp.lpSum(sabah_yumurtalar) >= 1
     if sabah_hamur: prob += pulp.lpSum(sabah_hamur) == 1
-    if sabah_klasikler: prob += pulp.lpSum(sabah_klasikler) >= 1, "Kesin_Klasik_Kahvaltilik"
+    if sabah_klasikler: prob += pulp.lpSum(sabah_klasikler) >= 1
     
     sabah_peynirler = [yemek_degiskenleri[y["id"]] for y in yemekler if y["kategori"] in sabah_kat and "peynir" in y["isim"].lower()]
     sabah_tatlilar = [yemek_degiskenleri[y["id"]] for y in yemekler if y["kategori"] in sabah_kat and any(k in y["isim"].lower() for k in ["bal", "reçel", "recel", "pekmez", "çikolata"])]
@@ -130,14 +115,21 @@ def diyet_olustur(hedef_kalori: int):
         if y["kategori"] in sabah_kat and "ekmek" not in y["isim"].lower():
             prob += yemek_degiskenleri[y["id"]] <= 1
 
-    # --- LOKANTA STANDARDI ---
+    # 🌟 LOKANTA STANDARDI (3 ÇEŞİT TABLDOT KURALI) 🌟
     ogle_aksam_ana = [yemek_degiskenleri[y["id"]] for y in yemekler if y["kategori"] not in sabah_kat and y["kategori"] not in ara_ogun_kat and ana_yemek_mi(y)]
-    ogle_aksam_hafif_yan = [yemek_degiskenleri[y["id"]] for y in yemekler if y["kategori"] not in sabah_kat and y["kategori"] not in ara_ogun_kat and hafif_yan_mi(y)]
-    ogle_aksam_agir_karb = [yemek_degiskenleri[y["id"]] for y in yemekler if y["kategori"] not in sabah_kat and y["kategori"] not in ara_ogun_kat and not ana_yemek_mi(y) and not hafif_yan_mi(y)]
+    
+    # Yan yemek havuzu: Ana yemek olmayan diğer her şey (Çorba, Salata, Meze, Pilav, Makarna vb.)
+    ogle_aksam_yan_tumu = [yemek_degiskenleri[y["id"]] for y in yemekler if y["kategori"] not in sabah_kat and y["kategori"] not in ara_ogun_kat and not ana_yemek_mi(y)]
+    
+    # Ağır Karbonhidrat Freni (Pilav/Makarna/Patates)
+    ogle_aksam_agir_karb = [yemek_degiskenleri[y["id"]] for y in yemekler if y["kategori"] not in sabah_kat and y["kategori"] not in ara_ogun_kat and not ana_yemek_mi(y) and any(k in y["isim"].lower() for k in ["pilav", "makarna", "patates", "barbunya", "mantı", "börek", "erişte"])]
 
-    if ogle_aksam_ana: prob += pulp.lpSum(ogle_aksam_ana) == 2
-    if ogle_aksam_hafif_yan: prob += pulp.lpSum(ogle_aksam_hafif_yan) >= 2
-    if ogle_aksam_agir_karb: prob += pulp.lpSum(ogle_aksam_agir_karb) <= 1
+    # Kurallar: Tam 2 Ana Yemek, Tam 4 Yan Yemek!
+    if ogle_aksam_ana: prob += pulp.lpSum(ogle_aksam_ana) == 2, "Kesin_2_Ana_Yemek"
+    if ogle_aksam_yan_tumu: prob += pulp.lpSum(ogle_aksam_yan_tumu) == 4, "Kesin_4_Yan_Yemek" 
+    
+    # Karbonhidrat komasına girmemek için günde maks 2 ağır karbonhidrat sınırı
+    if ogle_aksam_agir_karb: prob += pulp.lpSum(ogle_aksam_agir_karb) <= 2, "Max_2_Agir_Karb"
 
     for y in yemekler:
         if y["kategori"] not in sabah_kat and y["kategori"] not in ara_ogun_kat:
@@ -148,21 +140,16 @@ def diyet_olustur(hedef_kalori: int):
     ara_icecekler = [yemek_degiskenleri[y["id"]] for y in yemekler if y["kategori"] in ara_ogun_kat and icecek_mi(y)]
     ara_tumu = [yemek_degiskenleri[y["id"]] for y in yemekler if y["kategori"] in ara_ogun_kat]
 
-    # 🌟 DONDURMA VE TATLI FRENİ 🌟 (Çilekli + Karamelli dondurma rezaletini önler)
     tum_tatlilar = [yemek_degiskenleri[y["id"]] for y in yemekler if y["kategori"].lower() in ["tatlı", "tatli"] or any(k in y["isim"].lower() for k in ["dondurma", "tatlı", "pasta", "kek", "çikolata", "gofret"])]
-    if tum_tatlilar: prob += pulp.lpSum(tum_tatlilar) <= 1, "Max_1_Tatli_Dondurma"
-
+    if tum_tatlilar: prob += pulp.lpSum(tum_tatlilar) <= 1
     if ara_meyveler: prob += pulp.lpSum(ara_meyveler) >= 1
     if ara_icecekler: prob += pulp.lpSum(ara_icecekler) <= 1
-    
-    # 🌟 YENİ KURAL: ARA ÖĞÜN KESİNLİKLE 2 ÇEŞİT OLACAK 🌟
-    if ara_tumu: prob += pulp.lpSum(ara_tumu) == 2, "Kesin_2_Cesit_Ara_Ogun"
+    if ara_tumu: prob += pulp.lpSum(ara_tumu) == 2
 
     # --- AĞIRLIK FRENLERİ ---
     baliklar = [yemek_degiskenleri[y["id"]] for y in yemekler if any(k in y["isim"].lower() for k in ["somon", "balık", "hamsi", "levrek"])]
     if baliklar: prob += pulp.lpSum(baliklar) <= 1
 
-    # 🌟 KIRMIZI ET LİSTESİ GÜNCELLENDİ (Gut hastalığı riski sıfıra indi!) 🌟
     kirmizi_etler = [yemek_degiskenleri[y["id"]] for y in yemekler if any(k in y["isim"].lower() for k in ["köfte", "et", "kıyma", "kebap", "döner", "kavurma", "tantuni", "dürüm", "kokoreç", "iskender", "kuzu", "beyti", "biftek", "antrikot"])]
     if kirmizi_etler: prob += pulp.lpSum(kirmizi_etler) <= 1
 
@@ -177,7 +164,6 @@ def diyet_olustur(hedef_kalori: int):
     if pulp.LpStatus[prob.status] == 'Optimal':
         ogle_aksam_ana_secilen = []
         ogle_aksam_yan_secilen = []
-        ogle_aksam_ekstra_karb = []
 
         for y in yemekler:
             secilen_miktar = int(yemek_degiskenleri[y["id"]].varValue)
@@ -189,29 +175,41 @@ def diyet_olustur(hedef_kalori: int):
                 y_kopya["karb"] *= secilen_miktar
                 y_kopya["yag"] *= secilen_miktar
 
-                # Çay kelimesi geçiyorsa kategorisine bakmadan direkt Sabah'a ekle!
                 if y_kopya["kategori"] in sabah_kat or "çay" in y_kopya["isim"].lower(): 
                     ogunler["Sabah"].append(y_kopya)
                 elif y_kopya["kategori"] in ara_ogun_kat: 
                     ogunler["Ara_Öğün"].append(y_kopya)
                 else:
                     if ana_yemek_mi(y_kopya): ogle_aksam_ana_secilen.append(y_kopya)
-                    elif hafif_yan_mi(y_kopya): ogle_aksam_yan_secilen.append(y_kopya)
-                    else: ogle_aksam_ekstra_karb.append(y_kopya)
+                    else: ogle_aksam_yan_secilen.append(y_kopya)
 
                 hesaplanan_kalori += y_kopya["kalori"]
                 hesaplanan_protein += y_kopya["protein"]
                 hesaplanan_karb += y_kopya["karb"]
                 hesaplanan_yag += y_kopya["yag"]
                 
+        # 🌟 AKILLI DAĞITICI (Ağır ve Hafif Yan Yemekleri Öğünlere Eşit Paylaştır) 🌟
+        # Kalorisi 100'den büyük olanlar (Pilav, Makarna) ile hafifleri (Salata, Çorba) ayırıyoruz.
+        yan_agir = [y for y in ogle_aksam_yan_secilen if y["kalori"] > 100]
+        yan_hafif = [y for y in ogle_aksam_yan_secilen if y["kalori"] <= 100]
+        
+        duzenli_yan = []
+        # Her öğüne 1 ağır, 1 hafif yan yemek düşecek şekilde sıraya diziyoruz
+        while yan_agir or yan_hafif:
+            if yan_agir: duzenli_yan.append(yan_agir.pop(0))
+            if yan_hafif: duzenli_yan.append(yan_hafif.pop(0))
+
+        # 🌟 3 ÇEŞİT FERMUAR SİSTEMİ 🌟
+        # Sıralama: [Öğle Ana, Öğle Yan1, Öğle Yan2, Akşam Ana, Akşam Yan1, Akşam Yan2]
         ogle_aksam_birlestirilmis = []
         for i in range(2):
-            if i < len(ogle_aksam_ana_secilen): ogle_aksam_birlestirilmis.append(ogle_aksam_ana_secilen[i])
-            if i < len(ogle_aksam_yan_secilen): ogle_aksam_birlestirilmis.append(ogle_aksam_yan_secilen[i])
-        
-        for ekstra in ogle_aksam_ekstra_karb:
-            ogle_aksam_birlestirilmis.insert(2, ekstra) 
-
+            if i < len(ogle_aksam_ana_secilen): 
+                ogle_aksam_birlestirilmis.append(ogle_aksam_ana_secilen[i])
+            if i*2 < len(duzenli_yan): 
+                ogle_aksam_birlestirilmis.append(duzenli_yan[i*2])
+            if i*2 + 1 < len(duzenli_yan): 
+                ogle_aksam_birlestirilmis.append(duzenli_yan[i*2 + 1])
+                
         ogunler["Öğle_ve_Akşam"] = ogle_aksam_birlestirilmis
 
         return {
