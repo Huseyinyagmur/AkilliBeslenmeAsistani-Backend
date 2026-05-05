@@ -140,3 +140,19 @@ def kullanici_var_mi(email: str):
         return kullanici_kontrol_et(email)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Kontrol hatası: {str(e)}")
+
+# Sınıf tanımlamalarının (class ... BaseModel) olduğu yere ekle
+class DiyetKayitIstegi(BaseModel):
+    email: str
+    diyet_plani: dict
+
+# Endpoint'lerin olduğu yere ekle
+@app.post("/api/diyet-kaydet")
+def diyet_kaydet(istek: DiyetKayitIstegi):
+    from services import aktif_menuyu_kaydet
+    return aktif_menuyu_kaydet(istek.email, istek.diyet_plani)
+
+@app.get("/api/aktif-diyet/{email}")
+def diyet_getir(email: str):
+    from services import aktif_menuyu_getir
+    return aktif_menuyu_getir(email)

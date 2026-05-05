@@ -235,27 +235,51 @@ def kullanici_kaydet(email: str, ad: str, cinsiyet: str, yas: int, boy_cm: float
         "hesaplanan_hedef_kalori": hedef_kalori
     }
 
-def kullanici_kontrol_et(email: str):
-    # Kullanıcı giriş yaptığında sistemde daha önceden kaydı var mı diye bakar
-    with engine.connect() as conn:
-        # Tablo yoksa hata vermemesi için basit bir kontrol
-        tablo_var_mi = conn.execute(text("SELECT count(*) FROM sysobjects WHERE name='Kullanicilar' and xtype='U'")).scalar()
-        if tablo_var_mi == 0:
-            return {"durum": "yeni"}
+# services.py dosyasındaki kullanici_kaydet fonksiyonunu bununla değiştir:
 
-        sorgu = text("SELECT * FROM Kullanicilar WHERE Email = :email")
-        sonuc = conn.execute(sorgu, {"email": email}).fetchone()
+def kullanici_kaydet(email: str, ad: str, cinsiyet: str, yas: int, boy_cm: float, kilo_kg: float, hareket_katsayisi: float, hedef: str):
+    # Kalori hesabını yapan fonksiyonunun adının bmr_ve_kalori_hesapla olduğunu varsayıyorum (mevcut kodunla aynı)
+    hedef_kalori = bmr_ve_kalori_hesapla(cinsiyet, yas, boy_cm, kilo_kg, hareket_katsayisi, hedef)
+    
+    with engine.begin() as conn: 
+        # Tablo yoksa oluştur
+        conn.execute(text("""
+            IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='Kullanicilar' and xtype='U')
+            CREATE TABLE Kullanicilar (
+                Kullanici_Id INT IDENTITY(1,1) PRIMARY KEY,
+                Email NVARCHAR(255) UNIQUE, 
+                Ad NVARCHAR(100), Cinsiyet NVARCHAR(10), Yas INT, Boy_cm FLOAT,
+                Kilo_kg FLOAT, Hareket_Katsayisi FLOAT, Hedef_Kalori INT
+            )
+        """))
         
-        if sonuc:
-            return {"durum": "kayitli", 
-                    "ad": sonuc.Ad, 
-                    "hedef_kalori": sonuc.Hedef_Kalori,
-                    "yas": sonuc.Yas,
-                    "boy_cm": sonuc.Boy_cm,
-                    "kilo_kg": sonuc.Kilo_kg,
-                    "cinsiyet": sonuc.Cinsiyet}
-        else:
-            return {"durum": "yeni"}
+        # 🌟 İŞTE HAYAT KURTARAN UPSERT (Güncelle veya Ekle) MANTIĞI
+        sorgu = text("""
+            IF EXISTS (SELECT 1 FROM Kullanicilar WHERE Email = :email)
+            BEGIN
+                -- Kullanıcı varsa, yeni girdiği boy/kilo verileriyle GÜNCELLE
+                UPDATE Kullanicilar 
+                SET Ad = :ad, Cinsiyet = :cinsiyet, Yas = :yas, Boy_cm = :boy, 
+                    Kilo_kg = :kilo, Hareket_Katsayisi = :hareket, Hedef_Kalori = :hedef_kalori
+                WHERE Email = :email
+            END
+            ELSE
+            BEGIN
+                -- Kullanıcı yoksa, SIFIRDAN EKLE
+                INSERT INTO Kullanicilar (Email, Ad, Cinsiyet, Yas, Boy_cm, Kilo_kg, Hareket_Katsayisi, Hedef_Kalori)
+                VALUES (:email, :ad, :cinsiyet, :yas, :boy, :kilo, :hareket, :hedef_kalori)
+            END
+        """)
+        
+        conn.execute(sorgu, {
+            "email": email, "ad": ad, "cinsiyet": cinsiyet, "yas": yas, "boy": boy_cm, 
+            "kilo": kilo_kg, "hareket": hareket_katsayisi, "hedef_kalori": hedef_kalori
+        })
+        
+    return {
+        "mesaj": "Profil başarıyla oluşturuldu veya güncellendi.", 
+        "hesaplanan_hedef_kalori": hedef_kalori
+    }
 def alternatif_yemek_bul(eski_yemek_id: int, kategori: str, eski_kalori: float, alerjiler: list, sevilmeyenler: list, sevilenler: list, saglik_sorunlari: list, diyet_turu: str):
     alerjiler = [a.lower() for a in (alerjiler or [])]
     sevilmeyenler = [s.lower() for s in (sevilmeyenler or [])]
@@ -345,3 +369,60 @@ def alternatif_yemek_bul(eski_yemek_id: int, kategori: str, eski_kalori: float, 
         "eski_id": eski_yemek_id,
         "yeni_yemek": yeni_secilen_yemek
     }
+# services.py içine ekle
+def aktif_menuyu_kaydet(email: str, diyet_plani: dict):
+    import json
+    with engine.begin() as conn:
+        # Tablo yoksa oluştur
+        conn.execute(text("""
+            IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='DiyetKayitlari' and xtype='U')
+            CREATE TABLE DiyetKayitlari (
+                Id INT IDENTITY(1,1) PRIMARY KEY,
+                Email NVARCHAR(255),
+                DiyetJSON NVARCHAR(MAX),
+                KayitTarihi DATETIME DEFAULT GETDATE()
+            )
+        """))
+        
+        # Kullanıcının eski aktif menüsünü temizle (Sadece en güncelini tutmak için)
+        conn.execute(text("DELETE FROM DiyetKayitlari WHERE Email = :email"), {"email": email})
+        
+        # Yeni menüyü JSON olarak kaydet
+        conn.execute(text("""
+            INSERT INTO DiyetKayitlari (Email, DiyetJSON) 
+            VALUES (:email, :json_veri)
+        """), {"email": email, "json_veri": json.dumps(diyet_plani)})
+    return {"durum": "kaydedildi"}
+
+def aktif_menuyu_getir(email: str):
+    import json
+    with engine.connect() as conn:
+        try:
+            # ÖNCE KONTROL: Tablo veritabanında mevcut mu?
+            tablo_var_mi = conn.execute(text("SELECT count(*) FROM sysobjects WHERE name='DiyetKayitlari' and xtype='U'")).scalar()
+            if tablo_var_mi == 0:
+                return None
+            
+            sorgu = text("SELECT TOP 1 DiyetJSON FROM DiyetKayitlari WHERE Email = :email ORDER BY KayitTarihi DESC")
+            sonuc = conn.execute(sorgu, {"email": email}).fetchone()
+            if sonuc:
+                return json.loads(sonuc[0])
+            return None
+        except Exception as e:
+            print(f"Veri çekme hatası: {e}")
+            return None
+
+def kullanici_kontrol_et(email: str):
+    with engine.connect() as conn:
+        try:
+            tablo_var_mi = conn.execute(text("SELECT count(*) FROM sysobjects WHERE name='Kullanicilar' and xtype='U'")).scalar()
+            if tablo_var_mi == 0:
+                return {"kayitli_mi": False}
+            
+            sorgu = text("SELECT COUNT(*) FROM Kullanicilar WHERE Email = :email")
+            sonuc = conn.execute(sorgu, {"email": email}).scalar()
+            
+            return {"kayitli_mi": sonuc > 0}
+        except Exception as e:
+            print(f"Kullanici kontrol hatası: {e}")
+            return {"kayitli_mi": False}
