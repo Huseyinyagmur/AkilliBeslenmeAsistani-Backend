@@ -233,3 +233,92 @@ def kullanici_kaydet(ad: str, cinsiyet: str, yas: int, boy_cm: float, kilo_kg: f
         "hesaplanan_hedef_kalori": hedef_kalori,
         "detay": "Senin için oluşturulan bu kalori hedefini /api/diyet-hazirla uç noktasında kullanabilirsin."
     }
+def alternatif_yemek_bul(eski_yemek_id: int, kategori: str, eski_kalori: float, alerjiler: list, sevilmeyenler: list, sevilenler: list, saglik_sorunlari: list, diyet_turu: str):
+    alerjiler = [a.lower() for a in (alerjiler or [])]
+    sevilmeyenler = [s.lower() for s in (sevilmeyenler or [])]
+    sevilenler = [f.lower() for f in (sevilenler or [])]
+    saglik_sorunlari = saglik_sorunlari or []
+    
+    diyabet_var_mi = "Diyabet" in saglik_sorunlari or "İnsülin Direnci" in saglik_sorunlari
+
+    uygun_yemekler = []
+    with engine.connect() as conn:
+        # 🌟 YENİ: Sadece aynı kategoride, eski yemek olmayan ve kalorisi yakın yemekleri getir
+        sorgu = text("""
+            SELECT Yemek_Id, Yemek_Adı, Olcu_Birimi, Kalori_Kcal, Kategori, 
+                   Protein_g, Karbonhidrat_g, Yag_g, Baskin_Malzemeler, Alerjen_Bilgisi
+            FROM Yemekler 
+            WHERE Kategori = :kategori 
+              AND Yemek_Id != :eski_id
+              AND Kalori_Kcal BETWEEN :min_kal AND :max_kal
+        """)
+        
+        # Kalori marjını +/- 100 kcal olarak belirliyoruz ki sistem rahat yemek bulabilsin
+        sonuc = conn.execute(sorgu, {
+            "kategori": kategori, 
+            "eski_id": eski_yemek_id,
+            "min_kal": eski_kalori - 100,
+            "max_kal": eski_kalori + 100
+        })
+
+        for row in sonuc:
+            isim_lower = str(row.Yemek_Adı).lower()
+            kat_lower = str(row.Kategori).lower()
+            malzemeler_db = str(row.Baskin_Malzemeler).lower() if row.Baskin_Malzemeler else ""
+            alerjen_db = str(row.Alerjen_Bilgisi).lower() if row.Alerjen_Bilgisi else ""
+
+            # 🛑 1. Diyet Türü Filtresi
+            if diyet_turu == "Vegan" and any(w in isim_lower or w in kat_lower or w in malzemeler_db for w in ["et", "tavuk", "balık", "süt", "peynir", "yoğurt", "yumurta", "kefir", "ayran", "sucuk", "kavurma", "kuzu", "dana", "köfte", "kıyma"]): continue
+            if diyet_turu == "Vejetaryen" and any(w in isim_lower or w in kat_lower or w in malzemeler_db for w in ["et", "tavuk", "balık", "sucuk", "kavurma", "kuzu", "dana", "köfte", "hamsi", "somon", "kıyma"]): continue
+
+            # 🛑 2. Alerjen ve Sevilmeyenler Filtresi
+            if any(a in alerjen_db for a in alerjiler): continue
+            
+            yasakli_kelimeler = []
+            if "gluten" in alerjiler: yasakli_kelimeler.extend(["ekmek", "ekmeg", "börek", "borek", "simit", "makarna", "erişte", "eriste", "pide", "lavaş", "lavas", "un", "mantı", "manti", "şehriye", "sehriye", "bulgur", "tarhana", "irmik", "bazlama", "yufka", "galeta", "kraker", "pasta", "kek", "çerkez", "cerkez"])
+            if "laktoz" in alerjiler: yasakli_kelimeler.extend(["süt", "sut", "peynir", "yoğurt", "yogurt", "kefir", "ayran", "krem", "tereyağ", "tereyag", "cacık", "cacik"])
+            if "yer fıstığı" in alerjiler: yasakli_kelimeler.extend(["fıstık", "fistik"])
+            if "yumurta" in alerjiler: yasakli_kelimeler.extend(["yumurta", "omlet", "menemen", "çılbır", "cilbir"])
+            if "deniz ürünleri" in alerjiler: yasakli_kelimeler.extend(["balık", "balik", "somon", "hamsi", "levrek", "karides", "kalamar"])
+            if "kuruyemiş" in alerjiler: yasakli_kelimeler.extend(["ceviz", "fındık", "findik", "badem", "fıstık", "fistik"])
+            
+            if any(y in isim_lower or y in malzemeler_db for y in yasakli_kelimeler): continue
+            if any(s in isim_lower or s in malzemeler_db for s in sevilmeyenler): continue
+
+            # 🛑 3. Hastalık (Diyabet)
+            if diyabet_var_mi and (kat_lower in ["tatlı", "tatli"] or any(k in isim_lower or k in malzemeler_db for k in ["çikolata", "cikolata", "pasta", "kek", "bal", "reçel", "recel", "pekmez", "şeker"])): continue
+
+            # 🌟 ÖDÜL SİSTEMİ: Sevilen yemekse skorunu devasa artır
+            skor = random.uniform(1, 100)
+            if any(f in isim_lower or f in malzemeler_db for f in sevilenler):
+                skor += 5000  # Bu yemek seçilmek için en üste çıkacak
+
+            porsiyon = row.Olcu_Birimi if row.Olcu_Birimi else ""
+            y_isim = f"{porsiyon} {row.Yemek_Adı}".strip()
+            
+            if "yulaf" in y_isim.lower() and "lapa" in y_isim.lower() and "laktoz" in alerjiler:
+                y_isim += " (Su veya Bitkisel Süt ile)"
+
+            uygun_yemekler.append({
+                "id": row.Yemek_Id,
+                "isim": y_isim,
+                "kalori": float(row.Kalori_Kcal),
+                "kategori": row.Kategori,
+                "protein": float(row.Protein_g),
+                "karb": float(row.Karbonhidrat_g),
+                "yag": float(row.Yag_g),
+                "skor": skor
+            })
+
+    if not uygun_yemekler:
+        return {"durum": "Başarısız", "mesaj": "Seçtiğiniz yemeğe uygun alternatif bulunamadı (Kalori sınırına veya alerji kısıtlamalarına takıldı)."}
+
+    # 🏆 Yemekleri skora göre büyükten küçüğe sırala ve en yüksek olanı (1.yi) seç
+    uygun_yemekler.sort(key=lambda x: x["skor"], reverse=True)
+    yeni_secilen_yemek = uygun_yemekler[0]
+
+    return {
+        "durum": "Başarılı",
+        "eski_id": eski_yemek_id,
+        "yeni_yemek": yeni_secilen_yemek
+    }

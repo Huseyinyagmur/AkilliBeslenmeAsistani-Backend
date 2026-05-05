@@ -2,14 +2,14 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import create_engine, text
 from pydantic import BaseModel
-from typing import List  # YENİ EKLENDİ: Listeleri tanımlamak için
-from services import diyet_olustur, kullanici_kaydet
+from typing import List
+from services import diyet_olustur, kullanici_kaydet, alternatif_yemek_bul
 import urllib
 
 # FastAPI uygulamasını başlat
 app = FastAPI(title="Akıllı Beslenme Asistanı API")
 
-# CORS Ayarları (Frontend'in bağlanabilmesi için)
+# CORS Ayarları
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"], 
@@ -31,21 +31,32 @@ params = urllib.parse.quote_plus(
 engine = create_engine(f'mssql+pyodbc:///?odbc_connect={params}')
 # -----------------------------
 
-# API'nin kabul edeceği kullanıcı şablonu (Pydantic Modeli)
 class KullaniciBilgileri(BaseModel):
     ad: str
-    cinsiyet: str  # "erkek" veya "kadin"
+    cinsiyet: str
     yas: int
     boy_cm: float
     kilo_kg: float
     hareket_katsayisi: float
     hedef: str
 
-# YENİ: Diyet algoritmasının beklediği detaylı veri şablonu
+# 🌟 GÜNCELLENDİ: sevilenler parametresi eklendi
 class DiyetIstegi(BaseModel):
     hedef_kalori: int
     alerjiler: List[str] = []
     sevilmeyenler: List[str] = []
+    sevilenler: List[str] = [] # YENİ EKLENDİ
+    saglik_sorunlari: List[str] = []
+    diyet_turu: str = "Standart"
+
+# 🌟 YENİ: Alternatif Bulma İstek Modeli
+class AlternatifIstegi(BaseModel):
+    eski_yemek_id: int
+    eski_yemek_kategorisi: str
+    eski_yemek_kalorisi: float
+    alerjiler: List[str] = []
+    sevilmeyenler: List[str] = []
+    sevilenler: List[str] = []
     saglik_sorunlari: List[str] = []
     diyet_turu: str = "Standart"
 
@@ -53,7 +64,6 @@ class DiyetIstegi(BaseModel):
 def root():
     return {"mesaj": "Diyet Asistanı API'si başarıyla çalışıyor! 🚀"}
 
-# Veritabanından Yemekleri Çeken Endpoint
 @app.get("/api/yemekler")
 def yemekleri_getir():
     try:
@@ -66,18 +76,17 @@ def yemekleri_getir():
                 for satir in sonuc
             ]
             return {"basari": True, "veri": yemek_listesi}
-            
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Veritabanı hatası: {str(e)}")
     
-# 🧠 YAPAY ZEKA (OPTİMİZASYON) UÇ NOKTASI (GÜNCELLENDİ: Artık POST isteği)
 @app.post("/api/diyet-hazirla")
 def akilli_diyet_olustur(istek: DiyetIstegi):
-    # Gelen listeleri ve hedef kaloriyi services.py'a gönderiyoruz
+    # 🌟 GÜNCELLENDİ: sevilenler backend'e iletiliyor
     sonuc = diyet_olustur(
         hedef_kalori=istek.hedef_kalori,
         alerjiler=istek.alerjiler,
         sevilmeyenler=istek.sevilmeyenler,
+        sevilenler=istek.sevilenler, # YENİ EKLENDİ
         saglik_sorunlari=istek.saglik_sorunlari,
         diyet_turu=istek.diyet_turu
     )
@@ -87,7 +96,25 @@ def akilli_diyet_olustur(istek: DiyetIstegi):
     else:
         raise HTTPException(status_code=400, detail=sonuc["mesaj"])
 
-# 👤 YENİ: KULLANICI OLUŞTURMA VE BMR HESAPLAMA UÇ NOKTASI
+# 🌟 YENİ: Alternatif Bul Endpoint'i (Şimdilik taslak)
+@app.post("/api/alternatif-bul")
+def alternatif_yemek_bul_api(istek: AlternatifIstegi):
+    sonuc = alternatif_yemek_bul(
+        eski_yemek_id=istek.eski_yemek_id,
+        kategori=istek.eski_yemek_kategorisi,
+        eski_kalori=istek.eski_yemek_kalorisi,
+        alerjiler=istek.alerjiler,
+        sevilmeyenler=istek.sevilmeyenler,
+        sevilenler=istek.sevilenler,
+        saglik_sorunlari=istek.saglik_sorunlari,
+        diyet_turu=istek.diyet_turu
+    )
+    
+    if sonuc["durum"] == "Başarılı":
+        return sonuc
+    else:
+        raise HTTPException(status_code=404, detail=sonuc["mesaj"])
+
 @app.post("/api/kullanici-olustur")
 def yeni_kullanici_olustur(kullanici: KullaniciBilgileri):
     try:
