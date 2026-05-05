@@ -71,7 +71,7 @@ def diyet_olustur(hedef_kalori: int, alerjiler: list = None, sevilmeyenler: list
 
             # 🛑 2. ALERJİ FİLTRESİ (İsme bakarak çıkarım yapıyoruz)
             yasakli_kelimeler = []
-            if "gluten" in alerjiler: yasakli_kelimeler.extend(["ekmek", "börek", "simit", "makarna", "erişte", "pide", "lavaş", "un"])
+            if "gluten" in alerjiler: yasakli_kelimeler.extend(["ekmek", "börek", "simit", "makarna", "erişte", "pide", "lavaş", "un", "mantı", "manti"])
             if "laktoz" in alerjiler: yasakli_kelimeler.extend(["süt", "peynir", "yoğurt", "kefir", "ayran", "krem", "tereyağ"])
             if "yer fıstığı" in alerjiler: yasakli_kelimeler.extend(["fıstık"])
             if "yumurta" in alerjiler: yasakli_kelimeler.extend(["yumurta", "omlet", "menemen", "çılbır"])
@@ -80,7 +80,7 @@ def diyet_olustur(hedef_kalori: int, alerjiler: list = None, sevilmeyenler: list
             
             if any(y in isim_lower for y in yasakli_kelimeler): continue
             
-            # 🛑 3. SEVİLMEYENLER FİLTRESİ (Örn: "Pırasa")
+            # 🛑 3. SEVİLMEYENLER FİLTRESİ 
             if any(s in isim_lower for s in sevilmeyenler): continue
 
             # 🛑 4. SAĞLIK SORUNU (Diyabet vb.)
@@ -98,7 +98,6 @@ def diyet_olustur(hedef_kalori: int, alerjiler: list = None, sevilmeyenler: list
                 "yag": float(row.Yag_g)
             })
     
-    # Yeterli yemek kaldı mı kontrolü
     if len(yemekler) < 15:
         return {"durum": "Başarısız", "mesaj": "Seçtiğiniz kısıtlamalara uygun veritabanında yeterli yemek kalmadı!"}
 
@@ -143,7 +142,7 @@ def diyet_olustur(hedef_kalori: int, alerjiler: list = None, sevilmeyenler: list
     sabah_cay = [yemek_degiskenleri[y["id"]] for y in yemekler if "çay" in y["isim"].lower()]
     if sabah_cay: prob += pulp.lpSum(sabah_cay) >= 1
 
-    sabah_yasaklilar = [yemek_degiskenleri[y["id"]] for y in yemekler if y["kategori"] in sabah_kat and any(k in y["isim"].lower() for k in ["pide", "lahmacun", "pizza", "hamburger", "döner", "mantı"])]
+    sabah_yasaklilar = [yemek_degiskenleri[y["id"]] for y in yemekler if y["kategori"] in sabah_kat and any(k in y["isim"].lower() for k in ["pide", "lahmacun", "pizza", "hamburger", "döner", "mantı", "manti"])]
     if sabah_yasaklilar: prob += pulp.lpSum(sabah_yasaklilar) == 0
 
     if sabah_yumurtalar: prob += pulp.lpSum(sabah_yumurtalar) >= 1
@@ -172,8 +171,10 @@ def diyet_olustur(hedef_kalori: int, alerjiler: list = None, sevilmeyenler: list
     if ogle_aksam_hafif_yan: prob += pulp.lpSum(ogle_aksam_hafif_yan) >= 2
     if ogle_aksam_agir_karb: prob += pulp.lpSum(ogle_aksam_agir_karb) <= 2
 
-    tum_makarnalar = [yemek_degiskenleri[y["id"]] for y in yemekler if "makarna" in y["isim"].lower()]
-    if tum_makarnalar: prob += pulp.lpSum(tum_makarnalar) <= 1
+    # 🌟 İTALYAN-TÜRK SENTEZİ ENGELİ (Mantı ve Makarna Aynı Gruba Alındı!) 🌟
+    tum_makarnalar_mantilar = [yemek_degiskenleri[y["id"]] for y in yemekler if any(k in y["isim"].lower() for k in ["makarna", "mantı", "manti", "erişte", "noodle"])]
+    if tum_makarnalar_mantilar: prob += pulp.lpSum(tum_makarnalar_mantilar) <= 1
+    
     tum_pilavlar = [yemek_degiskenleri[y["id"]] for y in yemekler if "pilav" in y["isim"].lower()]
     if tum_pilavlar: prob += pulp.lpSum(tum_pilavlar) <= 1
 
@@ -183,14 +184,21 @@ def diyet_olustur(hedef_kalori: int, alerjiler: list = None, sevilmeyenler: list
 
     # --- ARA ÖĞÜN KISITLAMASI ---
     ara_meyveler = [yemek_degiskenleri[y["id"]] for y in yemekler if y["kategori"] in ara_ogun_kat and meyve_kuruyemis_mi(y)]
-    ara_icecekler = [yemek_degiskenleri[y["id"]] for y in yemekler if y["kategori"] in ara_ogun_kat and icecek_mi(y)]
-    ara_tumu = [yemek_degiskenleri[y["id"]] for y in yemekler if y["kategori"] in ara_ogun_kat]
+    
+    # İçeceklerde Çayı hariç tutuyoruz ki Kefir vs seçme hakkı yanmasın
+    ara_icecekler_cay_haric = [yemek_degiskenleri[y["id"]] for y in yemekler if y["kategori"] in ara_ogun_kat and icecek_mi(y) and "çay" not in y["isim"].lower()]
+    
+    # 🌟 YALNIZ KALAN KAYISI ÇÖZÜMÜ: Ara öğünde ÇAY HARİÇ kesinlikle 2 yiyecek/içecek zorunlu tutuldu! 🌟
+    ara_tumu_cay_haric = [yemek_degiskenleri[y["id"]] for y in yemekler if y["kategori"] in ara_ogun_kat and "çay" not in y["isim"].lower()]
 
     tum_tatlilar = [yemek_degiskenleri[y["id"]] for y in yemekler if y["kategori"].lower() in ["tatlı", "tatli"] or any(k in y["isim"].lower() for k in ["dondurma", "tatlı", "pasta", "kek", "çikolata", "gofret"])]
+    
     if tum_tatlilar: prob += pulp.lpSum(tum_tatlilar) <= 1
     if ara_meyveler: prob += pulp.lpSum(ara_meyveler) >= 1
-    if ara_icecekler: prob += pulp.lpSum(ara_icecekler) <= 1
-    if ara_tumu: prob += pulp.lpSum(ara_tumu) == 2
+    if ara_icecekler_cay_haric: prob += pulp.lpSum(ara_icecekler_cay_haric) <= 1
+    
+    # Ara öğüne, "Çay Hariç" toplam 2 çeşit malzeme mecburen eklenecek
+    if ara_tumu_cay_haric: prob += pulp.lpSum(ara_tumu_cay_haric) == 2
 
     # --- AĞIRLIK FRENLERİ ---
     baliklar = [yemek_degiskenleri[y["id"]] for y in yemekler if any(k in y["isim"].lower() for k in ["somon", "balık", "hamsi", "levrek"])]
@@ -221,8 +229,14 @@ def diyet_olustur(hedef_kalori: int, alerjiler: list = None, sevilmeyenler: list
                 y_kopya["karb"] *= secilen_miktar
                 y_kopya["yag"] *= secilen_miktar
 
-                if y_kopya["kategori"] in sabah_kat or "çay" in y_kopya["isim"].lower(): 
+                # ÇAY AYRIŞTIRICISI (Sadece İlk Çay Kahvaltıya, Diğerleri Ara Öğüne)
+                if y_kopya["kategori"] in sabah_kat: 
                     ogunler["Sabah"].append(y_kopya)
+                elif "çay" in y_kopya["isim"].lower():
+                    if not any("çay" in s["isim"].lower() for s in ogunler["Sabah"]):
+                        ogunler["Sabah"].append(y_kopya) # İlk çay kahvaltıya
+                    else:
+                        ogunler["Ara_Öğün"].append(y_kopya) # İkinci çay (örn yeşil çay) ara öğüne
                 elif y_kopya["kategori"] in ara_ogun_kat: 
                     ogunler["Ara_Öğün"].append(y_kopya)
                 else:
