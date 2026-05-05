@@ -247,7 +247,13 @@ def kullanici_kontrol_et(email: str):
         sonuc = conn.execute(sorgu, {"email": email}).fetchone()
         
         if sonuc:
-            return {"durum": "kayitli", "ad": sonuc.Ad, "hedef_kalori": sonuc.Hedef_Kalori}
+            return {"durum": "kayitli", 
+                    "ad": sonuc.Ad, 
+                    "hedef_kalori": sonuc.Hedef_Kalori,
+                    "yas": sonuc.Yas,
+                    "boy_cm": sonuc.Boy_cm,
+                    "kilo_kg": sonuc.Kilo_kg,
+                    "cinsiyet": sonuc.Cinsiyet}
         else:
             return {"durum": "yeni"}
 def alternatif_yemek_bul(eski_yemek_id: int, kategori: str, eski_kalori: float, alerjiler: list, sevilmeyenler: list, sevilenler: list, saglik_sorunlari: list, diyet_turu: str):
