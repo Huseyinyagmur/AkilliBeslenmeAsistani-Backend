@@ -209,30 +209,47 @@ def bmr_ve_kalori_hesapla(cinsiyet: str, yas: int, boy_cm: float, kilo_kg: float
     else: hedef_kalori = gunluk_harcanan_kalori
     return int(hedef_kalori)
 
-def kullanici_kaydet(ad: str, cinsiyet: str, yas: int, boy_cm: float, kilo_kg: float, hareket_katsayisi: float, hedef: str):
+def kullanici_kaydet(email: str, ad: str, cinsiyet: str, yas: int, boy_cm: float, kilo_kg: float, hareket_katsayisi: float, hedef: str):
     hedef_kalori = bmr_ve_kalori_hesapla(cinsiyet, yas, boy_cm, kilo_kg, hareket_katsayisi, hedef)
     with engine.begin() as conn: 
+        # YENİ: Tabloyu oluştururken 'Email' sütununu ekliyoruz
         conn.execute(text("""
             IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='Kullanicilar' and xtype='U')
             CREATE TABLE Kullanicilar (
                 Kullanici_Id INT IDENTITY(1,1) PRIMARY KEY,
+                Email NVARCHAR(255) UNIQUE, 
                 Ad NVARCHAR(100), Cinsiyet NVARCHAR(10), Yas INT, Boy_cm FLOAT,
                 Kilo_kg FLOAT, Hareket_Katsayisi FLOAT, Hedef_Kalori INT
             )
         """))
         sorgu = text("""
-            INSERT INTO Kullanicilar (Ad, Cinsiyet, Yas, Boy_cm, Kilo_kg, Hareket_Katsayisi, Hedef_Kalori)
-            VALUES (:ad, :cinsiyet, :yas, :boy, :kilo, :hareket, :hedef_kalori)
+            INSERT INTO Kullanicilar (Email, Ad, Cinsiyet, Yas, Boy_cm, Kilo_kg, Hareket_Katsayisi, Hedef_Kalori)
+            VALUES (:email, :ad, :cinsiyet, :yas, :boy, :kilo, :hareket, :hedef_kalori)
         """)
         conn.execute(sorgu, {
-            "ad": ad, "cinsiyet": cinsiyet, "yas": yas, "boy": boy_cm, 
+            "email": email, "ad": ad, "cinsiyet": cinsiyet, "yas": yas, "boy": boy_cm, 
             "kilo": kilo_kg, "hareket": hareket_katsayisi, "hedef_kalori": hedef_kalori
         })
     return {
-        "mesaj": f"Hoş geldin {ad}! Profilin oluşturuldu.", 
-        "hesaplanan_hedef_kalori": hedef_kalori,
-        "detay": "Senin için oluşturulan bu kalori hedefini /api/diyet-hazirla uç noktasında kullanabilirsin."
+        "mesaj": f"Profil oluşturuldu ve veritabanına kaydedildi.", 
+        "hesaplanan_hedef_kalori": hedef_kalori
     }
+
+def kullanici_kontrol_et(email: str):
+    # Kullanıcı giriş yaptığında sistemde daha önceden kaydı var mı diye bakar
+    with engine.connect() as conn:
+        # Tablo yoksa hata vermemesi için basit bir kontrol
+        tablo_var_mi = conn.execute(text("SELECT count(*) FROM sysobjects WHERE name='Kullanicilar' and xtype='U'")).scalar()
+        if tablo_var_mi == 0:
+            return {"durum": "yeni"}
+
+        sorgu = text("SELECT * FROM Kullanicilar WHERE Email = :email")
+        sonuc = conn.execute(sorgu, {"email": email}).fetchone()
+        
+        if sonuc:
+            return {"durum": "kayitli", "ad": sonuc.Ad, "hedef_kalori": sonuc.Hedef_Kalori}
+        else:
+            return {"durum": "yeni"}
 def alternatif_yemek_bul(eski_yemek_id: int, kategori: str, eski_kalori: float, alerjiler: list, sevilmeyenler: list, sevilenler: list, saglik_sorunlari: list, diyet_turu: str):
     alerjiler = [a.lower() for a in (alerjiler or [])]
     sevilmeyenler = [s.lower() for s in (sevilmeyenler or [])]

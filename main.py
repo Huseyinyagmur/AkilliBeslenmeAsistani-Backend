@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import create_engine, text
 from pydantic import BaseModel
 from typing import List
-from services import diyet_olustur, kullanici_kaydet, alternatif_yemek_bul
+from services import diyet_olustur, kullanici_kaydet, alternatif_yemek_bul, kullanici_kontrol_et
 import urllib
 
 # FastAPI uygulamasını başlat
@@ -32,6 +32,7 @@ engine = create_engine(f'mssql+pyodbc:///?odbc_connect={params}')
 # -----------------------------
 
 class KullaniciBilgileri(BaseModel):
+    email:str
     ad: str
     cinsiyet: str
     yas: int
@@ -119,6 +120,7 @@ def alternatif_yemek_bul_api(istek: AlternatifIstegi):
 def yeni_kullanici_olustur(kullanici: KullaniciBilgileri):
     try:
         sonuc = kullanici_kaydet(
+            email=kullanici.email,
             ad=kullanici.ad,
             cinsiyet=kullanici.cinsiyet,
             yas=kullanici.yas,
@@ -129,4 +131,12 @@ def yeni_kullanici_olustur(kullanici: KullaniciBilgileri):
         )
         return sonuc
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Kullanıcı kaydedilirken bir hata oluştu: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Kullanıcı kaydedilirken hata: {str(e)}")
+
+# YENİ EKLENEN ENDPOINT
+@app.get("/api/kullanici-kontrol/{email}")
+def kullanici_var_mi(email: str):
+    try:
+        return kullanici_kontrol_et(email)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Kontrol hatası: {str(e)}")
