@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import create_engine, text
 from pydantic import BaseModel
 from typing import List
-from services import diyet_olustur, kullanici_kaydet, alternatif_yemek_bul, kullanici_kontrol_et
+from services import diyet_olustur, kullanici_kaydet, alternatif_yemek_bul_ml, kullanici_kontrol_et
 import urllib
 
 # FastAPI uygulamasını başlat
@@ -30,6 +30,15 @@ params = urllib.parse.quote_plus(
 )
 engine = create_engine(f'mssql+pyodbc:///?odbc_connect={params}')
 # -----------------------------
+class AlternatifIstegi(BaseModel):
+    eski_yemek_id: int
+    eski_yemek_kategorisi: str
+    eski_yemek_kalorisi: float
+    alerjiler: List[str]
+    sevilmeyenler: List[str]
+    sevilenler: List[str]
+    saglik_sorunlari: List[str]
+    diyet_turu: str
 
 class KullaniciBilgileri(BaseModel):
     email:str
@@ -96,7 +105,18 @@ def akilli_diyet_olustur(istek: DiyetIstegi):
         return sonuc
     else:
         raise HTTPException(status_code=400, detail=sonuc["mesaj"])
-
+@app.post("/api/alternatif-bul")
+def alternatif_bul(istek: AlternatifIstegi):
+    from services import alternatif_yemek_bul_ml
+    
+    # İstekteki verileri Python fonksiyonumuza gönderiyoruz
+    sonuc = alternatif_yemek_bul_ml(
+        eski_yemek_id=istek.eski_yemek_id,
+        kategori=istek.eski_yemek_kategorisi,
+        alerjiler=istek.alerjiler,
+        sevilmeyenler=istek.sevilmeyenler
+    )
+    return sonuc
 # 🌟 YENİ: Alternatif Bul Endpoint'i (Şimdilik taslak)
 @app.post("/api/alternatif-bul")
 def alternatif_yemek_bul_api(istek: AlternatifIstegi):

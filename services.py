@@ -2,6 +2,9 @@ import pulp
 from sqlalchemy import create_engine, text
 import urllib
 import random
+import pandas as pd
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics.pairwise import cosine_similarity
 
 # --- VERİTABANI BAĞLANTISI ---
 server_adi = 'LAPTOP-V013QBHO' 
@@ -280,95 +283,85 @@ def kullanici_kaydet(email: str, ad: str, cinsiyet: str, yas: int, boy_cm: float
         "mesaj": "Profil başarıyla oluşturuldu veya güncellendi.", 
         "hesaplanan_hedef_kalori": hedef_kalori
     }
-def alternatif_yemek_bul(eski_yemek_id: int, kategori: str, eski_kalori: float, alerjiler: list, sevilmeyenler: list, sevilenler: list, saglik_sorunlari: list, diyet_turu: str):
-    alerjiler = [a.lower() for a in (alerjiler or [])]
-    sevilmeyenler = [s.lower() for s in (sevilmeyenler or [])]
-    sevilenler = [f.lower() for f in (sevilenler or [])]
-    saglik_sorunlari = saglik_sorunlari or []
-    
-    diyabet_var_mi = "Diyabet" in saglik_sorunlari or "İnsülin Direnci" in saglik_sorunlari
-
-    uygun_yemekler = []
+def alternatif_yemek_bul_ml(eski_yemek_id: int, kategori: str, alerjiler: list, sevilmeyenler: list):
     with engine.connect() as conn:
-        # 🌟 YENİ: Sadece aynı kategoride, eski yemek olmayan ve kalorisi yakın yemekleri getir
-        sorgu = text("""
-            SELECT Yemek_Id, Yemek_Adı, Olcu_Birimi, Kalori_Kcal, Kategori, 
-                   Protein_g, Karbonhidrat_g, Yag_g, Baskin_Malzemeler, Alerjen_Bilgisi
-            FROM Yemekler 
-            WHERE Kategori = :kategori 
-              AND Yemek_Id != :eski_id
-              AND Kalori_Kcal BETWEEN :min_kal AND :max_kal
-        """)
+        # 1. ADIM: İlgili kategorideki ("Öğle Yemeği", "Kahvaltı" vb.) tüm yemekleri SQL'den çek
+        # DİKKAT: Tablo adın farklıysa 'Yemekler' kısmını güncelle!
+        sorgu = text("SELECT * FROM Yemekler WHERE Kategori = :kategori")
+        sonuc = conn.execute(sorgu, {"kategori": kategori})
+        yemekler_db = sonuc.fetchall()
         
-        # Kalori marjını +/- 100 kcal olarak belirliyoruz ki sistem rahat yemek bulabilsin
-        sonuc = conn.execute(sorgu, {
-            "kategori": kategori, 
-            "eski_id": eski_yemek_id,
-            "min_kal": eski_kalori - 100,
-            "max_kal": eski_kalori + 100
-        })
+        if not yemekler_db:
+            return {"durum": "Hata", "mesaj": "Bu kategoride uygun alternatif bulunamadı."}
 
-        for row in sonuc:
-            isim_lower = str(row.Yemek_Adı).lower()
-            kat_lower = str(row.Kategori).lower()
-            malzemeler_db = str(row.Baskin_Malzemeler).lower() if row.Baskin_Malzemeler else ""
-            alerjen_db = str(row.Alerjen_Bilgisi).lower() if row.Alerjen_Bilgisi else ""
+        # 2. ADIM: Verileri Scikit-Learn'ün anlayacağı Pandas DataFrame'e çevir
+        sutun_isimleri = sonuc.keys()
+        df = pd.DataFrame(yemekler_db, columns=sutun_isimleri)
 
-            # 🛑 1. Diyet Türü Filtresi
-            if diyet_turu == "Vegan" and any(w in isim_lower or w in kat_lower or w in malzemeler_db for w in ["et", "tavuk", "balık", "süt", "peynir", "yoğurt", "yumurta", "kefir", "ayran", "sucuk", "kavurma", "kuzu", "dana", "köfte", "kıyma"]): continue
-            if diyet_turu == "Vejetaryen" and any(w in isim_lower or w in kat_lower or w in malzemeler_db for w in ["et", "tavuk", "balık", "sucuk", "kavurma", "kuzu", "dana", "köfte", "hamsi", "somon", "kıyma"]): continue
+        # NLP & Filtreleme: Kullanıcının alerjisi olan veya sevmediği yemekleri DataFrame'den çıkar
+        yasaklilar = alerjiler + sevilmeyenler
+        for yasakli in yasaklilar:
+            # İsmin içinde yasaklı kelime geçiyorsa (örn: "Mantar") o satırı sil
+            df = df[~df['Isim'].str.contains(yasakli, case=False, na=False)]
 
-            # 🛑 2. Alerjen ve Sevilmeyenler Filtresi
-            if any(a in alerjen_db for a in alerjiler): continue
+        if df.empty:
+            return {"durum": "Hata", "mesaj": "Kısıtlamalara uyan alternatif kalmadı."}
+
+        # Eski yemeği tablodan bul ve indeksini al
+        eski_yemek_satiri = df[df['Id'] == eski_yemek_id]
+        if eski_yemek_satiri.empty:
+            return {"durum": "Hata", "mesaj": "Orijinal yemek filtreye takıldı veya bulunamadı."}
             
-            yasakli_kelimeler = []
-            if "gluten" in alerjiler: yasakli_kelimeler.extend(["ekmek", "ekmeg", "börek", "borek", "simit", "makarna", "erişte", "eriste", "pide", "lavaş", "lavas", "un", "mantı", "manti", "şehriye", "sehriye", "bulgur", "tarhana", "irmik", "bazlama", "yufka", "galeta", "kraker", "pasta", "kek", "çerkez", "cerkez"])
-            if "laktoz" in alerjiler: yasakli_kelimeler.extend(["süt", "sut", "peynir", "yoğurt", "yogurt", "kefir", "ayran", "krem", "tereyağ", "tereyag", "cacık", "cacik"])
-            if "yer fıstığı" in alerjiler: yasakli_kelimeler.extend(["fıstık", "fistik"])
-            if "yumurta" in alerjiler: yasakli_kelimeler.extend(["yumurta", "omlet", "menemen", "çılbır", "cilbir"])
-            if "deniz ürünleri" in alerjiler: yasakli_kelimeler.extend(["balık", "balik", "somon", "hamsi", "levrek", "karides", "kalamar"])
-            if "kuruyemiş" in alerjiler: yasakli_kelimeler.extend(["ceviz", "fındık", "findik", "badem", "fıstık", "fistik"])
-            
-            if any(y in isim_lower or y in malzemeler_db for y in yasakli_kelimeler): continue
-            if any(s in isim_lower or s in malzemeler_db for s in sevilmeyenler): continue
+        eski_yemek_index = eski_yemek_satiri.index[0]
 
-            # 🛑 3. Hastalık (Diyabet)
-            if diyabet_var_mi and (kat_lower in ["tatlı", "tatli"] or any(k in isim_lower or k in malzemeler_db for k in ["çikolata", "cikolata", "pasta", "kek", "bal", "reçel", "recel", "pekmez", "şeker"])): continue
+        # 3. ADIM: MAKİNE ÖĞRENMESİ (FEATURE EXTRACTION)
+        # Sadece sayısal besin değerlerini alıyoruz (İçerik Tabanlı Filtreleme için)
+        features = df[['Kalori', 'Protein', 'Karb', 'Yag']].fillna(0)
 
-            # 🌟 ÖDÜL SİSTEMİ: Sevilen yemekse skorunu devasa artır
-            skor = random.uniform(1, 100)
-            if any(f in isim_lower or f in malzemeler_db for f in sevilenler):
-                skor += 5000  # Bu yemek seçilmek için en üste çıkacak
+        # 4. ADIM: NORMALİZASYON (StandardScaler)
+        # Kalori 300, Protein 10. Kalori çok büyük bir sayı olduğu için makineyi yanıltmasın diye değerleri eşitler.
+        scaler = StandardScaler()
+        scaled_features = scaler.fit_transform(features)
 
-            porsiyon = row.Olcu_Birimi if row.Olcu_Birimi else ""
-            y_isim = f"{porsiyon} {row.Yemek_Adı}".strip()
-            
-            if "yulaf" in y_isim.lower() and "lapa" in y_isim.lower() and "laktoz" in alerjiler:
-                y_isim += " (Su veya Bitkisel Süt ile)"
+        # 5. ADIM: KOSİNÜS BENZERLİĞİ (Cosine Similarity)
+        # Uzaydaki vektörlerin açılarını hesaplar.
+        similarity_matrix = cosine_similarity(scaled_features)
 
-            uygun_yemekler.append({
-                "id": row.Yemek_Id,
-                "isim": y_isim,
-                "kalori": float(row.Kalori_Kcal),
-                "kategori": row.Kategori,
-                "protein": float(row.Protein_g),
-                "karb": float(row.Karbonhidrat_g),
-                "yag": float(row.Yag_g),
-                "skor": skor
-            })
+        # Eski yemeğimizin diğer tüm yemeklerle olan benzerlik skorlarını al
+        # df.index.get_loc() ile gerçek indeksi matris indeksine çeviriyoruz
+        matris_indeksi = df.index.get_loc(eski_yemek_index)
+        skorlar = list(enumerate(similarity_matrix[matris_indeksi]))
 
-    if not uygun_yemekler:
-        return {"durum": "Başarısız", "mesaj": "Seçtiğiniz yemeğe uygun alternatif bulunamadı (Kalori sınırına veya alerji kısıtlamalarına takıldı)."}
+        # Skorlara göre büyükten küçüğe sırala (1.0 en çok benzeyen demektir)
+        skorlar = sorted(skorlar, key=lambda x: x[1], reverse=True)
 
-    # 🏆 Yemekleri skora göre büyükten küçüğe sırala ve en yüksek olanı (1.yi) seç
-    uygun_yemekler.sort(key=lambda x: x["skor"], reverse=True)
-    yeni_secilen_yemek = uygun_yemekler[0]
+        # En çok benzeyen genelde yemeğin kendisidir. Kendisi olmayan en yüksek skorlu ilk yemeği bul.
+        en_iyi_index = None
+        for idx, skor in skorlar:
+            # Gerçek DataFrame indeksini bul
+            gercek_index = df.index[idx]
+            if df.loc[gercek_index, 'Id'] != eski_yemek_id:
+                en_iyi_index = gercek_index
+                break
 
-    return {
-        "durum": "Başarılı",
-        "eski_id": eski_yemek_id,
-        "yeni_yemek": yeni_secilen_yemek
-    }
+        if en_iyi_index is None:
+            return {"durum": "Hata", "mesaj": "Farklı bir alternatif bulunamadı."}
+
+        # 6. ADIM: En iyi alternatifi Frontend'in beklediği formata çevir ve yolla
+        yeni_yemek = df.loc[en_iyi_index]
+
+        return {
+            "durum": "Başarılı",
+            "yeni_yemek": {
+                "id": int(yeni_yemek["Id"]),
+                "isim": str(yeni_yemek["Isim"]),
+                "kalori": float(yeni_yemek["Kalori"]),
+                "protein": float(yeni_yemek["Protein"]),
+                "karb": float(yeni_yemek["Karb"]),
+                "yag": float(yeni_yemek["Yag"]),
+                "kategori": str(yeni_yemek["Kategori"])
+            }
+        }
 # services.py içine ekle
 def aktif_menuyu_kaydet(email: str, diyet_plani: dict):
     import json
