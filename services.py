@@ -15,6 +15,11 @@ params = urllib.parse.quote_plus(
 engine = create_engine(f'mssql+pyodbc:///?odbc_connect={params}')
 
 def diyet_olustur(hedef_kalori: int):
+    alerjiler = [a.lower() for a in (alerjiler or [])]
+    sevilmeyenler = [s.lower() for s in (sevilmeyenler or [])]
+    saglik_sorunlari = saglik_sorunlari or []
+    
+    diyabet_var_mi = "Diyabet" in saglik_sorunlari or "İnsülin Direnci" in saglik_sorunlari
     # --- YARDIMCI KATEGORİ FONKSİYONLARI ---
     def ana_yemek_mi(y):
         k, i = y["kategori"].lower(), y["isim"].lower()
@@ -44,14 +49,34 @@ def diyet_olustur(hedef_kalori: int):
 
     yemekler = []
     with engine.connect() as conn:
+        # SORGUMUZA ALERJEN VE MALZEME SÜTUNLARINI DA EKLİYORUZ
         sorgu = text("""
             SELECT Yemek_Id, Yemek_Adı, Olcu_Birimi, Kalori_Kcal, Kategori, 
-                   Protein_g, Karbonhidrat_g, Yag_g 
+                   Protein_g, Karbonhidrat_g, Yag_g, Alerjen_Bilgisi, Baskin_Malzemeler, Diyet_Turu 
             FROM Yemekler 
             WHERE Kalori_Kcal IS NOT NULL AND Protein_g IS NOT NULL AND Karbonhidrat_g IS NOT NULL AND Yag_g IS NOT NULL
         """)
         sonuc = conn.execute(sorgu)
         for row in sonuc:
+            isim_lower = str(row.Yemek_Adı).lower()
+            alerjenler_db = str(row.Alerjen_Bilgisi).lower() if row.Alerjen_Bilgisi else ""
+            malzemeler_db = str(row.Baskin_Malzemeler).lower() if row.Baskin_Malzemeler else ""
+            diyet_db = str(row.Diyet_Turu).lower() if row.Diyet_Turu else ""
+
+            # 🛑 1. DİYET TÜRÜ FİLTRESİ
+            if diyet_turu == "Vegan" and "vegan" not in diyet_db: continue
+            if diyet_turu == "Vejetaryen" and diyet_db not in ["vegan", "vejetaryen"]: continue
+            
+            # 🛑 2. ALERJİ FİLTRESİ (Alerjen listesinde veya isminde geçiyorsa YASAKLA)
+            if any(a in alerjenler_db or a in isim_lower or a in malzemeler_db for a in alerjiler): continue
+            
+            # 🛑 3. SEVİLMEYENLER FİLTRESİ (Malzemelerde veya isminde varsa YASAKLA)
+            if any(s in isim_lower or s in malzemeler_db for s in sevilmeyenler): continue
+
+            # 🛑 4. SAĞLIK SORUNU (Örn: Diyabet varsa Tatlı kategorisini komple çöpe at)
+            if diyabet_var_mi and row.Kategori in ["Tatlı", "Tatli"]: continue
+
+            # Eğer tüm güvenlik filtrelerinden geçtiyse, yapay zekanın havuzuna ekle:
             porsiyon = row.Olcu_Birimi if row.Olcu_Birimi else ""
             yemekler.append({
                 "id": row.Yemek_Id,
