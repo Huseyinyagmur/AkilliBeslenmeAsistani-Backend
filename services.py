@@ -302,13 +302,13 @@ def alternatif_yemek_bul_ml(eski_yemek_id: int, kategori: str, alerjiler: list, 
         yasaklilar = alerjiler + sevilmeyenler
         for yasakli in yasaklilar:
             # İsmin içinde yasaklı kelime geçiyorsa (örn: "Mantar") o satırı sil
-            df = df[~df['Isim'].str.contains(yasakli, case=False, na=False)]
+            df = df[~df['Yemek_Adı'].str.contains(yasakli, case=False, na=False)]
 
         if df.empty:
             return {"durum": "Hata", "mesaj": "Kısıtlamalara uyan alternatif kalmadı."}
 
         # Eski yemeği tablodan bul ve indeksini al
-        eski_yemek_satiri = df[df['Id'] == eski_yemek_id]
+        eski_yemek_satiri = df[df['Yemek_Id'] == eski_yemek_id]
         if eski_yemek_satiri.empty:
             return {"durum": "Hata", "mesaj": "Orijinal yemek filtreye takıldı veya bulunamadı."}
             
@@ -316,7 +316,7 @@ def alternatif_yemek_bul_ml(eski_yemek_id: int, kategori: str, alerjiler: list, 
 
         # 3. ADIM: MAKİNE ÖĞRENMESİ (FEATURE EXTRACTION)
         # Sadece sayısal besin değerlerini alıyoruz (İçerik Tabanlı Filtreleme için)
-        features = df[['Kalori', 'Protein', 'Karb', 'Yag']].fillna(0)
+        features = df[['Kalori_Kcal', 'Protein_g', 'Karbonhidrat_g', 'Yag_g']].fillna(0)
 
         # 4. ADIM: NORMALİZASYON (StandardScaler)
         # Kalori 300, Protein 10. Kalori çok büyük bir sayı olduğu için makineyi yanıltmasın diye değerleri eşitler.
@@ -340,7 +340,7 @@ def alternatif_yemek_bul_ml(eski_yemek_id: int, kategori: str, alerjiler: list, 
         for idx, skor in skorlar:
             # Gerçek DataFrame indeksini bul
             gercek_index = df.index[idx]
-            if df.loc[gercek_index, 'Id'] != eski_yemek_id:
+            if df.loc[gercek_index, 'Yemek_Id'] != eski_yemek_id:
                 en_iyi_index = gercek_index
                 break
 
@@ -353,12 +353,12 @@ def alternatif_yemek_bul_ml(eski_yemek_id: int, kategori: str, alerjiler: list, 
         return {
             "durum": "Başarılı",
             "yeni_yemek": {
-                "id": int(yeni_yemek["Id"]),
-                "isim": str(yeni_yemek["Isim"]),
-                "kalori": float(yeni_yemek["Kalori"]),
-                "protein": float(yeni_yemek["Protein"]),
-                "karb": float(yeni_yemek["Karb"]),
-                "yag": float(yeni_yemek["Yag"]),
+                "id": int(yeni_yemek["Yemek_Id"]),
+                "isim": str(yeni_yemek["Yemek_Adı"]),
+                "kalori": float(yeni_yemek["Kalori_Kcal"]),
+                "protein": float(yeni_yemek["Protein_g"]),
+                "karb": float(yeni_yemek["Karbonhidrat_g"]),
+                "yag": float(yeni_yemek["Yag_g"]),
                 "kategori": str(yeni_yemek["Kategori"])
             }
         }
