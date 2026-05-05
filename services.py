@@ -417,12 +417,25 @@ def kullanici_kontrol_et(email: str):
         try:
             tablo_var_mi = conn.execute(text("SELECT count(*) FROM sysobjects WHERE name='Kullanicilar' and xtype='U'")).scalar()
             if tablo_var_mi == 0:
-                return {"kayitli_mi": False}
+                return {"kayitli_mi": False, "durum": "kayitsiz"}
             
-            sorgu = text("SELECT COUNT(*) FROM Kullanicilar WHERE Email = :email")
-            sonuc = conn.execute(sorgu, {"email": email}).scalar()
+            sorgu = text("SELECT Ad, Cinsiyet, Yas, Boy_cm, Kilo_kg, Hareket_Katsayisi, Hedef_Kalori FROM Kullanicilar WHERE Email = :email")
+            sonuc = conn.execute(sorgu, {"email": email}).fetchone()
             
-            return {"kayitli_mi": sonuc > 0}
+            if sonuc:
+                return {
+                    "kayitli_mi": True,
+                    "durum": "kayitli",
+                    "ad": sonuc.Ad,
+                    "cinsiyet": sonuc.Cinsiyet,
+                    "yas": sonuc.Yas,
+                    "boy_cm": sonuc.Boy_cm,
+                    "kilo_kg": sonuc.Kilo_kg,
+                    "hareket_katsayisi": sonuc.Hareket_Katsayisi,
+                    "hedef_kalori": sonuc.Hedef_Kalori
+                }
+            
+            return {"kayitli_mi": False, "durum": "kayitsiz"}
         except Exception as e:
             print(f"Kullanici kontrol hatası: {e}")
-            return {"kayitli_mi": False}
+            return {"kayitli_mi": False, "durum": "hata", "mesaj": str(e)}
