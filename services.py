@@ -49,9 +49,10 @@ def diyet_olustur(hedef_kalori: int, alerjiler: list = None, sevilmeyenler: list
 
     yemekler = []
     with engine.connect() as conn:
+        # 🌟 YENİ: SQL Sorgusuna "Baskin_Malzemeler" ve "Alerjen_Bilgisi" eklendi!
         sorgu = text("""
             SELECT Yemek_Id, Yemek_Adı, Olcu_Birimi, Kalori_Kcal, Kategori, 
-                   Protein_g, Karbonhidrat_g, Yag_g 
+                   Protein_g, Karbonhidrat_g, Yag_g, Baskin_Malzemeler, Alerjen_Bilgisi
             FROM Yemekler 
             WHERE Kalori_Kcal IS NOT NULL AND Protein_g IS NOT NULL AND Karbonhidrat_g IS NOT NULL AND Yag_g IS NOT NULL
         """)
@@ -59,41 +60,43 @@ def diyet_olustur(hedef_kalori: int, alerjiler: list = None, sevilmeyenler: list
         for row in sonuc:
             isim_lower = str(row.Yemek_Adı).lower()
             kat_lower = str(row.Kategori).lower()
+            
+            # 🌟 YENİ: Veritabanı sütunlarımızı çekip küçük harfe çeviriyoruz
+            malzemeler_db = str(row.Baskin_Malzemeler).lower() if row.Baskin_Malzemeler else ""
+            alerjen_db = str(row.Alerjen_Bilgisi).lower() if row.Alerjen_Bilgisi else ""
 
-            if diyet_turu == "Vegan" and any(w in isim_lower or w in kat_lower for w in ["et", "tavuk", "balık", "süt", "peynir", "yoğurt", "yumurta", "kefir", "ayran", "sucuk", "kavurma", "kuzu", "dana", "köfte", "kıyma"]):
+            if diyet_turu == "Vegan" and any(w in isim_lower or w in kat_lower or w in malzemeler_db for w in ["et", "tavuk", "balık", "süt", "peynir", "yoğurt", "yumurta", "kefir", "ayran", "sucuk", "kavurma", "kuzu", "dana", "köfte", "kıyma"]):
                 continue
-            if diyet_turu == "Vejetaryen" and any(w in isim_lower or w in kat_lower for w in ["et", "tavuk", "balık", "sucuk", "kavurma", "kuzu", "dana", "köfte", "hamsi", "somon", "kıyma"]):
+            if diyet_turu == "Vejetaryen" and any(w in isim_lower or w in kat_lower or w in malzemeler_db for w in ["et", "tavuk", "balık", "sucuk", "kavurma", "kuzu", "dana", "köfte", "hamsi", "somon", "kıyma"]):
                 continue
 
+            # 🌟 YENİ ALERJİ SÜZGECİ (Önce Alerjen_Bilgisi sütununa bakar)
+            alerji_tespit_edildi = False
+            for secilen_alerji in alerjiler:
+                if secilen_alerji in alerjen_db:  # Direkt veritabanı sütunundan yakalarsa
+                    alerji_tespit_edildi = True
+                    break
+            if alerji_tespit_edildi: continue
+
+            # Alerjiler için kelime bazlı "Çifte Güvenlik" Ağı (Eğer veritabanına girilmemişse diye)
             yasakli_kelimeler = []
-            
-            # 🌟 YENİ: Hem Türkçe hem İngilizce karakterli "Kurşun Geçirmez" Gluten Listesi
             if "gluten" in alerjiler: 
-                yasakli_kelimeler.extend([
-                    "ekmek", "ekmeg", "börek", "borek", "simit", "makarna", 
-                    "erişte", "eriste", "pide", "lavaş", "lavas", "un", 
-                    "mantı", "manti", "şehriye", "sehriye", "bulgur", 
-                    "tarhana", "irmik", "bazlama", "yufka", "galeta", 
-                    "kraker", "pasta", "kek", "çerkez", "cerkez"
-                ])
-            
-            # 🌟 YENİ: Kurşun Geçirmez Laktoz Listesi
+                yasakli_kelimeler.extend(["ekmek", "ekmeg", "börek", "borek", "simit", "makarna", "erişte", "eriste", "pide", "lavaş", "lavas", "un", "mantı", "manti", "şehriye", "sehriye", "bulgur", "tarhana", "irmik", "bazlama", "yufka", "galeta", "kraker", "pasta", "kek", "çerkez", "cerkez"])
             if "laktoz" in alerjiler: 
-                yasakli_kelimeler.extend([
-                    "süt", "sut", "peynir", "yoğurt", "yogurt", 
-                    "kefir", "ayran", "krem", "tereyağ", "tereyag", "cacık", "cacik"
-                ])
-            
+                yasakli_kelimeler.extend(["süt", "sut", "peynir", "yoğurt", "yogurt", "kefir", "ayran", "krem", "tereyağ", "tereyag", "cacık", "cacik"])
             if "yer fıstığı" in alerjiler: yasakli_kelimeler.extend(["fıstık", "fistik"])
             if "yumurta" in alerjiler: yasakli_kelimeler.extend(["yumurta", "omlet", "menemen", "çılbır", "cilbir"])
             if "deniz ürünleri" in alerjiler: yasakli_kelimeler.extend(["balık", "balik", "somon", "hamsi", "levrek", "karides", "kalamar"])
             if "kuruyemiş" in alerjiler: yasakli_kelimeler.extend(["ceviz", "fındık", "findik", "badem", "fıstık", "fistik"])
             
-            if any(y in isim_lower for y in yasakli_kelimeler): continue
+            # Hem isminde hem de Baskın Malzemeler sütununda bu yasaklı kelimelerden var mı?
+            if any(y in isim_lower or y in malzemeler_db for y in yasakli_kelimeler): continue
             
-            if any(s in isim_lower for s in sevilmeyenler): continue
+            # 🌟 YENİ SEVİLMEYENLER SÜZGECİ: Direkt Baskın Malzemeler'de arıyor (Örn: Karnıyarık -> Patlıcan)
+            if any(s in isim_lower or s in malzemeler_db for s in sevilmeyenler): continue
 
-            if diyabet_var_mi and (kat_lower in ["tatlı", "tatli"] or any(k in isim_lower for k in ["çikolata", "cikolata", "pasta", "kek", "bal", "reçel", "recel", "pekmez"])):
+            # Hastalıklar (Diyabet)
+            if diyabet_var_mi and (kat_lower in ["tatlı", "tatli"] or any(k in isim_lower or k in malzemeler_db for k in ["çikolata", "cikolata", "pasta", "kek", "bal", "reçel", "recel", "pekmez", "şeker"])):
                 continue
 
             porsiyon = row.Olcu_Birimi if row.Olcu_Birimi else ""
