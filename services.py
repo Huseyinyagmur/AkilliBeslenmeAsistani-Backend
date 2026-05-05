@@ -354,7 +354,7 @@ def alternatif_yemek_bul_ml(eski_yemek_id: int, kategori: str, alerjiler: list, 
             "durum": "Başarılı",
             "yeni_yemek": {
                 "id": int(yeni_yemek["Yemek_Id"]),
-                "isim": str(yeni_yemek["Yemek_Adı"]),
+                "isim": f"{yeni_yemek['Olcu_Birimi']} ({yeni_yemek['Yemek_Adı']})",
                 "kalori": float(yeni_yemek["Kalori_Kcal"]),
                 "protein": float(yeni_yemek["Protein_g"]),
                 "karb": float(yeni_yemek["Karbonhidrat_g"]),
