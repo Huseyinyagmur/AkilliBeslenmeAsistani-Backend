@@ -70,8 +70,8 @@ def diyet_olustur(hedef_kalori: int, alerjiler: list = None, sevilmeyenler: list
             malzemeler_db = str(row.Baskin_Malzemeler).lower() if row.Baskin_Malzemeler else ""
             alerjen_db = str(row.Alerjen_Bilgisi).lower() if row.Alerjen_Bilgisi else ""
 
-            # 🛑 DİYET TÜRÜ FİLTRESİ
-            if diyet_turu == "Vegan" and any(w in isim_lower or w in kat_lower or w in malzemeler_db for w in ["et", "tavuk", "balık", "süt", "peynir", "yoğurt", "yumurta", "kefir", "ayran", "sucuk", "kavurma", "kuzu", "dana", "köfte", "kıyma"]):
+            # 🛑 DİYET TÜRÜ FİLTRESİ (Vegan filtresi bal ve yumurtayı da kapsayacak şekilde güçlendirildi)
+            if diyet_turu == "Vegan" and any(w in isim_lower or w in kat_lower or w in malzemeler_db for w in ["et", "tavuk", "balık", "süt", "peynir", "yoğurt", "yumurta", "kefir", "ayran", "sucuk", "kavurma", "kuzu", "dana", "köfte", "kıyma", "bal"]):
                 continue
             if diyet_turu == "Vejetaryen" and any(w in isim_lower or w in kat_lower or w in malzemeler_db for w in ["et", "tavuk", "balık", "sucuk", "kavurma", "kuzu", "dana", "köfte", "hamsi", "somon", "kıyma"]):
                 continue
@@ -150,18 +150,31 @@ def diyet_olustur(hedef_kalori: int, alerjiler: list = None, sevilmeyenler: list
     ara_ogun_kalori = pulp.lpSum([yemek_degiskenleri[y["id"]] * y["kalori"] for y in yemekler if y["kategori"] in ara_ogun_kat])
     prob += ara_ogun_kalori <= hedef_kalori * 0.15
 
-    # 🌟 ÖĞÜN KURALLARI VE ÇORBA SINIRI
-    # Günde max 2 çorba
+    # 🌟 ÖĞÜN KURALLARI VE MANTIK KISITLARI (Yeni Eklenen Kritik Kısıtlamalar)
+    
+    # Kural 1: Öğle ve Akşam öğünlerine "Kahvaltılık" türü (Pide vb.) bir şey GİREMEZ!
+    # Kural 2: Sabah kahvaltısına "Ana Yemek" türü (Döner, Kelle Paça) GİREMEZ!
+    # (Bunları modelin öğünleri bölme mantığına göre değil, seçilen toplam havuz üzerinden kısıtlıyoruz)
+    sabah_yemegi_adaylari = [yemek_degiskenleri[y["id"]] for y in yemekler if y["kategori"] in sabah_kat]
+    if sabah_yemegi_adaylari: prob += pulp.lpSum(sabah_yemegi_adaylari) >= 1
+    
+    # Kural 3: Günde max 2 çorba
     tum_corbalar = [yemek_degiskenleri[y["id"]] for y in yemekler if any(k in y["isim"].lower() for k in ["çorba", "corba"])]
     if tum_corbalar: prob += pulp.lpSum(tum_corbalar) <= 2
 
     # Kahvaltı Standartları
     sabah_yumurtalar = [yemek_degiskenleri[y["id"]] for y in yemekler if y["kategori"] in sabah_kat and yumurta_mi(y)]
-    if sabah_yumurtalar and "yumurta" not in alerjiler: prob += pulp.lpSum(sabah_yumurtalar) >= 1
+    if sabah_yumurtalar and "yumurta" not in alerjiler and diyet_turu != "Vegan": prob += pulp.lpSum(sabah_yumurtalar) >= 1
 
-    # Öğle ve Akşam Ana Yemekleri
+    # Öğle ve Akşam Ana Yemekleri Sınırı (Sporcu çöplük öğünü engelleme)
+    # Öğle ve akşam toplam max 2 ana yemek olabilir.
     ogle_aksam_ana = [yemek_degiskenleri[y["id"]] for y in yemekler if y["kategori"] not in sabah_kat and y["kategori"] not in ara_ogun_kat and ana_yemek_mi(y)]
-    if ogle_aksam_ana: prob += pulp.lpSum(ogle_aksam_ana) == 2
+    if ogle_aksam_ana: prob += pulp.lpSum(ogle_aksam_ana) <= 2
+    if ogle_aksam_ana: prob += pulp.lpSum(ogle_aksam_ana) >= 1 # En az 1 ana yemek olsun
+
+    # Yan Ürün Sınırı (Çok fazla salata meze yığmasını engelle)
+    yan_urunler = [yemek_degiskenleri[y["id"]] for y in yemekler if y["kategori"] not in sabah_kat and y["kategori"] not in ara_ogun_kat and not ana_yemek_mi(y)]
+    if yan_urunler: prob += pulp.lpSum(yan_urunler) <= 3
 
     prob.solve(pulp.PULP_CBC_CMD(msg=False))
     
@@ -184,13 +197,18 @@ def diyet_olustur(hedef_kalori: int, alerjiler: list = None, sevilmeyenler: list
                 hesap_kal += y["kalori"]; hesap_prot += y["protein"]
                 hesap_karb += y["karb"]; hesap_yag += y["yag"]
 
-        # Yan yemekleri (çorba, salata vb.) öğünlere dağıt
+        # Yan yemekleri (çorba, salata vb.) öğünlere mantıklı dağıt
         if len(ana_secilen) >= 2:
             ogunler["Öğle_ve_Akşam"].append(ana_secilen[0])
             if yan_secilen: ogunler["Öğle_ve_Akşam"].append(yan_secilen.pop(0))
             if yan_secilen: ogunler["Öğle_ve_Akşam"].append(yan_secilen.pop(0))
             
             ogunler["Öğle_ve_Akşam"].append(ana_secilen[1])
+            while yan_secilen: ogunler["Öğle_ve_Akşam"].append(yan_secilen.pop(0))
+        elif len(ana_secilen) == 1:
+            ogunler["Öğle_ve_Akşam"].append(ana_secilen[0])
+            while yan_secilen: ogunler["Öğle_ve_Akşam"].append(yan_secilen.pop(0))
+        else:
             while yan_secilen: ogunler["Öğle_ve_Akşam"].append(yan_secilen.pop(0))
 
         return {
@@ -214,11 +232,9 @@ def bmr_ve_kalori_hesapla(cinsiyet: str, yas: int, boy_cm: float, kilo_kg: float
     return int(hedef_kalori)
 
 def kullanici_kaydet(email: str, ad: str, cinsiyet: str, yas: int, boy_cm: float, kilo_kg: float, hareket_katsayisi: float, hedef: str):
-    # Kalori hesabını yapan fonksiyonunun adının bmr_ve_kalori_hesapla olduğunu varsayıyorum (mevcut kodunla aynı)
     hedef_kalori = bmr_ve_kalori_hesapla(cinsiyet, yas, boy_cm, kilo_kg, hareket_katsayisi, hedef)
     
     with engine.begin() as conn: 
-        # Tablo yoksa oluştur
         conn.execute(text("""
             IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='Kullanicilar' and xtype='U')
             CREATE TABLE Kullanicilar (
@@ -229,11 +245,9 @@ def kullanici_kaydet(email: str, ad: str, cinsiyet: str, yas: int, boy_cm: float
             )
         """))
         
-        # 🌟 İŞTE HAYAT KURTARAN UPSERT (Güncelle veya Ekle) MANTIĞI
         sorgu = text("""
             IF EXISTS (SELECT 1 FROM Kullanicilar WHERE Email = :email)
             BEGIN
-                -- Kullanıcı varsa, yeni girdiği boy/kilo verileriyle GÜNCELLE
                 UPDATE Kullanicilar 
                 SET Ad = :ad, Cinsiyet = :cinsiyet, Yas = :yas, Boy_cm = :boy, 
                     Kilo_kg = :kilo, Hareket_Katsayisi = :hareket, Hedef_Kalori = :hedef_kalori
@@ -241,7 +255,6 @@ def kullanici_kaydet(email: str, ad: str, cinsiyet: str, yas: int, boy_cm: float
             END
             ELSE
             BEGIN
-                -- Kullanıcı yoksa, SIFIRDAN EKLE
                 INSERT INTO Kullanicilar (Email, Ad, Cinsiyet, Yas, Boy_cm, Kilo_kg, Hareket_Katsayisi, Hedef_Kalori)
                 VALUES (:email, :ad, :cinsiyet, :yas, :boy, :kilo, :hareket, :hedef_kalori)
             END
@@ -256,10 +269,9 @@ def kullanici_kaydet(email: str, ad: str, cinsiyet: str, yas: int, boy_cm: float
         "mesaj": "Profil başarıyla oluşturuldu veya güncellendi.", 
         "hesaplanan_hedef_kalori": hedef_kalori
     }
+
 def alternatif_yemek_bul_ml(eski_yemek_id: int, kategori: str, alerjiler: list, sevilmeyenler: list):
     with engine.connect() as conn:
-        # 1. ADIM: İlgili kategorideki tüm yemekleri çek
-        # DİKKAT: Veritabanındaki tablo adının "Yemekler" ve "kategori" sütununun adının doğru olduğundan emin ol.
         sorgu = text("SELECT * FROM Yemekler WHERE Kategori = :kategori")
         sonuc = conn.execute(sorgu, {"kategori": kategori})
         yemekler_db = sonuc.fetchall()
@@ -267,55 +279,39 @@ def alternatif_yemek_bul_ml(eski_yemek_id: int, kategori: str, alerjiler: list, 
         if not yemekler_db:
             return {"durum": "Hata", "mesaj": "Bu kategoride uygun alternatif bulunamadı."}
 
-        # 2. ADIM: Pandas DataFrame'e çevir
         sutun_isimleri = sonuc.keys()
         df = pd.DataFrame(yemekler_db, columns=sutun_isimleri)
 
-        # NLP & Filtreleme: Yasaklıları çıkar
         yasaklilar = alerjiler + sevilmeyenler
         for yasakli in yasaklilar:
-            # Sütun adı DB'de 'isim' ise 'isim', 'Isim' ise 'Isim' olmalı!
             df = df[~df['Yemek_Adı'].str.contains(yasakli, case=False, na=False)]
 
         if df.empty:
             return {"durum": "Hata", "mesaj": "Kısıtlamalara uyan alternatif kalmadı."}
 
-        # Eski yemeği bul (Sütun adı 'id' ise küçük harfle)
         eski_yemek_satiri = df[df['Yemek_Id'] == eski_yemek_id]
         if eski_yemek_satiri.empty:
             return {"durum": "Hata", "mesaj": "Orijinal yemek filtreye takıldı veya bulunamadı."}
             
         eski_yemek_index = eski_yemek_satiri.index[0]
 
-        # 3. ADIM: FEATURE EXTRACTION (Özellik Çıkarımı)
-        # Sütun isimleri veritabanındaki ile BİREBİR aynı olmalı
         features = df[['Kalori_Kcal', 'Protein_g', 'Karbonhidrat_g', 'Yag_g']].fillna(0)
 
-        # 4. ADIM: NORMALİZASYON
-        # Makine öğrenmesi algoritmasının makroları doğru algılaması için ölçeklendirme
         scaler = StandardScaler()
         scaled_features = scaler.fit_transform(features)
 
-        # 5. ADIM: MAKİNE ÖĞRENMESİ - KNN (K-Nearest Neighbors) MODELİ
-        # Uzaklık metriği olarak 'cosine' (Kosinüs Benzerliği) kullanıyoruz.
         knn_model = NearestNeighbors(n_neighbors=2, metric='cosine', algorithm='brute')
-        
-        # MODELİ EĞİT (Fit): Yemeklerin uzaydaki yerlerini modele öğret
         knn_model.fit(scaled_features)
 
-        # TAHMİN ET (Predict): Hedef yemeğe uzayda en yakın komşuyu bul
         matris_indeksi = df.index.get_loc(eski_yemek_index)
         hedef_vektor = scaled_features[matris_indeksi].reshape(1, -1)
         mesafeler, indeksler = knn_model.kneighbors(hedef_vektor)
 
-        # indeksler[0][0] yemeğin kendisidir, indeksler[0][1] en iyi alternatiftir
         en_iyi_index_df = indeksler[0][1]
         gercek_index = df.index[en_iyi_index_df]
 
-        # 6. ADIM: Frontend'e Gönderim Formatı
         yeni_yemek = df.loc[gercek_index]
 
-        # Porsiyon birleştirme (İsim ve Birim sütunlarına göre)
         formatli_isim = f"{yeni_yemek['Olcu_Birimi']} {yeni_yemek['Yemek_Adı']}"
 
         return {
@@ -330,11 +326,10 @@ def alternatif_yemek_bul_ml(eski_yemek_id: int, kategori: str, alerjiler: list, 
                 "kategori": str(yeni_yemek["Kategori"])
             }
         }
-# services.py içine ekle
+
 def aktif_menuyu_kaydet(email: str, diyet_plani: dict):
     import json
     with engine.begin() as conn:
-        # Tablo yoksa oluştur
         conn.execute(text("""
             IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='DiyetKayitlari' and xtype='U')
             CREATE TABLE DiyetKayitlari (
@@ -345,10 +340,8 @@ def aktif_menuyu_kaydet(email: str, diyet_plani: dict):
             )
         """))
         
-        # Kullanıcının eski aktif menüsünü temizle (Sadece en güncelini tutmak için)
         conn.execute(text("DELETE FROM DiyetKayitlari WHERE Email = :email"), {"email": email})
         
-        # Yeni menüyü JSON olarak kaydet
         conn.execute(text("""
             INSERT INTO DiyetKayitlari (Email, DiyetJSON) 
             VALUES (:email, :json_veri)
@@ -359,7 +352,6 @@ def aktif_menuyu_getir(email: str):
     import json
     with engine.connect() as conn:
         try:
-            # ÖNCE KONTROL: Tablo veritabanında mevcut mu?
             tablo_var_mi = conn.execute(text("SELECT count(*) FROM sysobjects WHERE name='DiyetKayitlari' and xtype='U'")).scalar()
             if tablo_var_mi == 0:
                 return None
