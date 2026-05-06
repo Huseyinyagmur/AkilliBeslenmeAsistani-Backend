@@ -5,6 +5,7 @@ import random
 import pandas as pd
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics.pairwise import cosine_similarity
+from sklearn.neighbors import NearestNeighbors
 
 # --- VERİTABANI BAĞLANTISI ---
 server_adi = 'LAPTOP-V013QBHO' 
@@ -213,34 +214,6 @@ def bmr_ve_kalori_hesapla(cinsiyet: str, yas: int, boy_cm: float, kilo_kg: float
     return int(hedef_kalori)
 
 def kullanici_kaydet(email: str, ad: str, cinsiyet: str, yas: int, boy_cm: float, kilo_kg: float, hareket_katsayisi: float, hedef: str):
-    hedef_kalori = bmr_ve_kalori_hesapla(cinsiyet, yas, boy_cm, kilo_kg, hareket_katsayisi, hedef)
-    with engine.begin() as conn: 
-        # YENİ: Tabloyu oluştururken 'Email' sütununu ekliyoruz
-        conn.execute(text("""
-            IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='Kullanicilar' and xtype='U')
-            CREATE TABLE Kullanicilar (
-                Kullanici_Id INT IDENTITY(1,1) PRIMARY KEY,
-                Email NVARCHAR(255) UNIQUE, 
-                Ad NVARCHAR(100), Cinsiyet NVARCHAR(10), Yas INT, Boy_cm FLOAT,
-                Kilo_kg FLOAT, Hareket_Katsayisi FLOAT, Hedef_Kalori INT
-            )
-        """))
-        sorgu = text("""
-            INSERT INTO Kullanicilar (Email, Ad, Cinsiyet, Yas, Boy_cm, Kilo_kg, Hareket_Katsayisi, Hedef_Kalori)
-            VALUES (:email, :ad, :cinsiyet, :yas, :boy, :kilo, :hareket, :hedef_kalori)
-        """)
-        conn.execute(sorgu, {
-            "email": email, "ad": ad, "cinsiyet": cinsiyet, "yas": yas, "boy": boy_cm, 
-            "kilo": kilo_kg, "hareket": hareket_katsayisi, "hedef_kalori": hedef_kalori
-        })
-    return {
-        "mesaj": f"Profil oluşturuldu ve veritabanına kaydedildi.", 
-        "hesaplanan_hedef_kalori": hedef_kalori
-    }
-
-# services.py dosyasındaki kullanici_kaydet fonksiyonunu bununla değiştir:
-
-def kullanici_kaydet(email: str, ad: str, cinsiyet: str, yas: int, boy_cm: float, kilo_kg: float, hareket_katsayisi: float, hedef: str):
     # Kalori hesabını yapan fonksiyonunun adının bmr_ve_kalori_hesapla olduğunu varsayıyorum (mevcut kodunla aynı)
     hedef_kalori = bmr_ve_kalori_hesapla(cinsiyet, yas, boy_cm, kilo_kg, hareket_katsayisi, hedef)
     
@@ -285,8 +258,8 @@ def kullanici_kaydet(email: str, ad: str, cinsiyet: str, yas: int, boy_cm: float
     }
 def alternatif_yemek_bul_ml(eski_yemek_id: int, kategori: str, alerjiler: list, sevilmeyenler: list):
     with engine.connect() as conn:
-        # 1. ADIM: İlgili kategorideki ("Öğle Yemeği", "Kahvaltı" vb.) tüm yemekleri SQL'den çek
-        # DİKKAT: Tablo adın farklıysa 'Yemekler' kısmını güncelle!
+        # 1. ADIM: İlgili kategorideki tüm yemekleri çek
+        # DİKKAT: Veritabanındaki tablo adının "Yemekler" ve "kategori" sütununun adının doğru olduğundan emin ol.
         sorgu = text("SELECT * FROM Yemekler WHERE Kategori = :kategori")
         sonuc = conn.execute(sorgu, {"kategori": kategori})
         yemekler_db = sonuc.fetchall()
@@ -294,67 +267,62 @@ def alternatif_yemek_bul_ml(eski_yemek_id: int, kategori: str, alerjiler: list, 
         if not yemekler_db:
             return {"durum": "Hata", "mesaj": "Bu kategoride uygun alternatif bulunamadı."}
 
-        # 2. ADIM: Verileri Scikit-Learn'ün anlayacağı Pandas DataFrame'e çevir
+        # 2. ADIM: Pandas DataFrame'e çevir
         sutun_isimleri = sonuc.keys()
         df = pd.DataFrame(yemekler_db, columns=sutun_isimleri)
 
-        # NLP & Filtreleme: Kullanıcının alerjisi olan veya sevmediği yemekleri DataFrame'den çıkar
+        # NLP & Filtreleme: Yasaklıları çıkar
         yasaklilar = alerjiler + sevilmeyenler
         for yasakli in yasaklilar:
-            # İsmin içinde yasaklı kelime geçiyorsa (örn: "Mantar") o satırı sil
+            # Sütun adı DB'de 'isim' ise 'isim', 'Isim' ise 'Isim' olmalı!
             df = df[~df['Yemek_Adı'].str.contains(yasakli, case=False, na=False)]
 
         if df.empty:
             return {"durum": "Hata", "mesaj": "Kısıtlamalara uyan alternatif kalmadı."}
 
-        # Eski yemeği tablodan bul ve indeksini al
+        # Eski yemeği bul (Sütun adı 'id' ise küçük harfle)
         eski_yemek_satiri = df[df['Yemek_Id'] == eski_yemek_id]
         if eski_yemek_satiri.empty:
             return {"durum": "Hata", "mesaj": "Orijinal yemek filtreye takıldı veya bulunamadı."}
             
         eski_yemek_index = eski_yemek_satiri.index[0]
 
-        # 3. ADIM: MAKİNE ÖĞRENMESİ (FEATURE EXTRACTION)
-        # Sadece sayısal besin değerlerini alıyoruz (İçerik Tabanlı Filtreleme için)
+        # 3. ADIM: FEATURE EXTRACTION (Özellik Çıkarımı)
+        # Sütun isimleri veritabanındaki ile BİREBİR aynı olmalı
         features = df[['Kalori_Kcal', 'Protein_g', 'Karbonhidrat_g', 'Yag_g']].fillna(0)
 
-        # 4. ADIM: NORMALİZASYON (StandardScaler)
-        # Kalori 300, Protein 10. Kalori çok büyük bir sayı olduğu için makineyi yanıltmasın diye değerleri eşitler.
+        # 4. ADIM: NORMALİZASYON
+        # Makine öğrenmesi algoritmasının makroları doğru algılaması için ölçeklendirme
         scaler = StandardScaler()
         scaled_features = scaler.fit_transform(features)
 
-        # 5. ADIM: KOSİNÜS BENZERLİĞİ (Cosine Similarity)
-        # Uzaydaki vektörlerin açılarını hesaplar.
-        similarity_matrix = cosine_similarity(scaled_features)
+        # 5. ADIM: MAKİNE ÖĞRENMESİ - KNN (K-Nearest Neighbors) MODELİ
+        # Uzaklık metriği olarak 'cosine' (Kosinüs Benzerliği) kullanıyoruz.
+        knn_model = NearestNeighbors(n_neighbors=2, metric='cosine', algorithm='brute')
+        
+        # MODELİ EĞİT (Fit): Yemeklerin uzaydaki yerlerini modele öğret
+        knn_model.fit(scaled_features)
 
-        # Eski yemeğimizin diğer tüm yemeklerle olan benzerlik skorlarını al
-        # df.index.get_loc() ile gerçek indeksi matris indeksine çeviriyoruz
+        # TAHMİN ET (Predict): Hedef yemeğe uzayda en yakın komşuyu bul
         matris_indeksi = df.index.get_loc(eski_yemek_index)
-        skorlar = list(enumerate(similarity_matrix[matris_indeksi]))
+        hedef_vektor = scaled_features[matris_indeksi].reshape(1, -1)
+        mesafeler, indeksler = knn_model.kneighbors(hedef_vektor)
 
-        # Skorlara göre büyükten küçüğe sırala (1.0 en çok benzeyen demektir)
-        skorlar = sorted(skorlar, key=lambda x: x[1], reverse=True)
+        # indeksler[0][0] yemeğin kendisidir, indeksler[0][1] en iyi alternatiftir
+        en_iyi_index_df = indeksler[0][1]
+        gercek_index = df.index[en_iyi_index_df]
 
-        # En çok benzeyen genelde yemeğin kendisidir. Kendisi olmayan en yüksek skorlu ilk yemeği bul.
-        en_iyi_index = None
-        for idx, skor in skorlar:
-            # Gerçek DataFrame indeksini bul
-            gercek_index = df.index[idx]
-            if df.loc[gercek_index, 'Yemek_Id'] != eski_yemek_id:
-                en_iyi_index = gercek_index
-                break
+        # 6. ADIM: Frontend'e Gönderim Formatı
+        yeni_yemek = df.loc[gercek_index]
 
-        if en_iyi_index is None:
-            return {"durum": "Hata", "mesaj": "Farklı bir alternatif bulunamadı."}
-
-        # 6. ADIM: En iyi alternatifi Frontend'in beklediği formata çevir ve yolla
-        yeni_yemek = df.loc[en_iyi_index]
+        # Porsiyon birleştirme (İsim ve Birim sütunlarına göre)
+        formatli_isim = f"{yeni_yemek['Olcu_Birimi']} {yeni_yemek['Yemek_Adı']}"
 
         return {
             "durum": "Başarılı",
             "yeni_yemek": {
                 "id": int(yeni_yemek["Yemek_Id"]),
-                "isim": f"{yeni_yemek['Olcu_Birimi']} ({yeni_yemek['Yemek_Adı']})",
+                "isim": formatli_isim,
                 "kalori": float(yeni_yemek["Kalori_Kcal"]),
                 "protein": float(yeni_yemek["Protein_g"]),
                 "karb": float(yeni_yemek["Karbonhidrat_g"]),
