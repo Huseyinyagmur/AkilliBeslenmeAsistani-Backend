@@ -19,41 +19,16 @@ params = urllib.parse.quote_plus(
 )
 engine = create_engine(f'mssql+pyodbc:///?odbc_connect={params}')
 
+
+    
 def diyet_olustur(hedef_kalori: int, alerjiler: list = None, sevilmeyenler: list = None, saglik_sorunlari: list = None, diyet_turu: str = "Standart", sevilenler: list = None):
     
-    # Gelen verileri küçük harfe çevirerek standardize ediyoruz
     alerjiler = [a.lower() for a in (alerjiler or [])]
     sevilmeyenler = [s.lower() for s in (sevilmeyenler or [])]
     sevilenler = [f.lower() for f in (sevilenler or [])]
     saglik_sorunlari = saglik_sorunlari or []
     
     diyabet_var_mi = "Diyabet" in saglik_sorunlari or "İnsülin Direnci" in saglik_sorunlari
-
-    # --- YARDIMCI KATEGORİ FONKSİYONLARI ---
-    def ana_yemek_mi(y):
-        k, i = y["kategori"].lower(), y["isim"].lower()
-        if k in ["ana yemek", "fast food"]: return True
-        return any(w in i for w in ["et ", "etli", "tavuk", "balık", "somon", "köfte", "kofte", "kıyma", "kavurma", "tantuni", "kebap", "döner", "pizza", "burger", "hamburger", "şiş", "hamsi", "levrek", "şnitzel", "kokoreç", "ciğer", "kuzu", "dana", "iskender", "biftek", "antrikot", "beğendi"])
-
-    def yumurta_mi(y): return any(w in y["isim"].lower() for w in ["yumurta", "omlet", "menemen", "çılbır", "sahanda"])
-    def hamur_isi_mi(y): return any(w in y["isim"].lower() for w in ["ekmek", "ekmeg", "börek", "borek", "simit", "açma", "poğaça", "tost", "lavaş", "bazlama", "yulaf", "gevrek"])
-    
-    def icecek_mi(y): 
-        k, i = y["kategori"].lower(), y["isim"].lower()
-        if "içecek" in k or "icecek" in k: return True
-        return any(w in i for w in ["su", "shake", "nektar", "ayran", "kahve", "çay", "cay", "soda", "kola", "fanta", "gazoz", "milkshake", "meyve suyu", "kefir", "limonata", "şalgam", "ice tea", "süt", "maden suyu", "şişe", "bardak", "kutu", "kupa", "fincan", "shaker"])
-
-    def meyve_kuruyemis_mi(y): 
-        if icecek_mi(y): return False 
-        k, i = y["kategori"].lower(), y["isim"].lower()
-        if k in ["tatlı", "tatli"] or any(w in i for w in ["dondurma", "tatlı", "pasta", "kek", "çikolata"]): return False
-        if k in ["meyve", "kuruyemiş", "kuruyemis"]: return True
-        return any(w in i for w in ["fıstık", "badem", "ceviz", "elma", "muz", "kuru", "hurma", "incir", "kayısı", "leblebi", "meyve", "fındık", "mandalina", "portakal", "çilek", "kavun", "karpuz"])
-
-    def hafif_yan_mi(y):
-        k, i = y["kategori"].lower(), y["isim"].lower()
-        if k in ["çorba", "corba", "salata", "meze"]: return True
-        return any(w in i for w in ["çorba", "corba", "salata", "yoğurt", "yogurt", "cacık", "ayran", "yeşillik", "piyaz", "tarator"])
 
     yemekler = []
     with engine.connect() as conn:
@@ -70,48 +45,66 @@ def diyet_olustur(hedef_kalori: int, alerjiler: list = None, sevilmeyenler: list
             malzemeler_db = str(row.Baskin_Malzemeler).lower() if row.Baskin_Malzemeler else ""
             alerjen_db = str(row.Alerjen_Bilgisi).lower() if row.Alerjen_Bilgisi else ""
 
-            # 🛑 DİYET TÜRÜ FİLTRESİ (Vegan filtresi bal ve yumurtayı da kapsayacak şekilde güçlendirildi)
-            if diyet_turu == "Vegan" and any(w in isim_lower or w in kat_lower or w in malzemeler_db for w in ["et", "tavuk", "balık", "süt", "peynir", "yoğurt", "yumurta", "kefir", "ayran", "sucuk", "kavurma", "kuzu", "dana", "köfte", "kıyma", "bal"]):
-                continue
-            if diyet_turu == "Vejetaryen" and any(w in isim_lower or w in kat_lower or w in malzemeler_db for w in ["et", "tavuk", "balık", "sucuk", "kavurma", "kuzu", "dana", "köfte", "hamsi", "somon", "kıyma"]):
-                continue
+            # 🛑 VEGAN FİLTRESİ
+            if diyet_turu == "Vegan" and any(w in isim_lower or w in kat_lower or w in malzemeler_db for w in ["et", "tavuk", "balık", "süt", "peynir", "yoğurt", "yumurta", "kefir", "ayran", "sucuk", "kavurma", "kuzu", "dana", "köfte", "kıyma", "bal", "tereyağ", "tereyag", "krem", "hamsi", "levrek", "somon"]): continue
+            if diyet_turu == "Vejetaryen" and any(w in isim_lower or w in kat_lower or w in malzemeler_db for w in ["et", "tavuk", "balık", "sucuk", "kavurma", "kuzu", "dana", "köfte", "hamsi", "somon", "kıyma", "levrek"]): continue
 
-            # 🛑 ALERJEN VE SEVİLMEYENLER (Veritabanı Sütunlarından Süzme)
+            # 🛑 ALERJEN VE SEVİLMEYENLER
             if any(a in alerjen_db for a in alerjiler): continue
             
             yasakli_kelimeler = []
-            if "gluten" in alerjiler: yasakli_kelimeler.extend(["ekmek", "ekmeg", "börek", "borek", "simit", "makarna", "erişte", "eriste", "pide", "lavaş", "lavas", "un", "mantı", "manti", "şehriye", "sehriye", "bulgur", "tarhana", "irmik", "bazlama", "yufka", "galeta", "kraker", "pasta", "kek", "çerkez", "cerkez"])
+            if "gluten" in alerjiler: yasakli_kelimeler.extend(["ekmek", "ekmeg", "börek", "borek", "simit", "makarna", "erişte", "eriste", "pide", "lavaş", "lavas", "un", "mantı", "manti", "şehriye", "sehriye", "bulgur", "tarhana", "irmik", "bazlama", "yufka", "galeta", "kraker", "pasta", "kek", "krep", "pankek"])
             if "laktoz" in alerjiler: yasakli_kelimeler.extend(["süt", "sut", "peynir", "yoğurt", "yogurt", "kefir", "ayran", "krem", "tereyağ", "tereyag", "cacık", "cacik"])
             if "yer fıstığı" in alerjiler: yasakli_kelimeler.extend(["fıstık", "fistik"])
-            if "yumurta" in alerjiler: yasakli_kelimeler.extend(["yumurta", "omlet", "menemen", "çılbır", "cilbir"])
+            if "yumurta" in alerjiler: yasakli_kelimeler.extend(["yumurta", "omlet", "menemen", "çılbır", "cilbir", "krep"])
             if "deniz ürünleri" in alerjiler: yasakli_kelimeler.extend(["balık", "balik", "somon", "hamsi", "levrek", "karides", "kalamar"])
-            if "kuruyemiş" in alerjiler: yasakli_kelimeler.extend(["ceviz", "fındık", "findik", "badem", "fıstık", "fistik"])
+            if "kuruyemiş" in alerjiler: yasakli_kelimeler.extend(["ceviz", "fındık", "findik", "badem", "fıstık", "fistik", "kaju"])
             
             if any(y in isim_lower or y in malzemeler_db for y in yasakli_kelimeler): continue
             if any(s in isim_lower or s in malzemeler_db for s in sevilmeyenler): continue
 
-            # 🛑 SAĞLIK (Diyabet)
-            if diyabet_var_mi and (kat_lower in ["tatlı", "tatli"] or any(k in isim_lower or k in malzemeler_db for k in ["çikolata", "cikolata", "pasta", "kek", "bal", "reçel", "recel", "pekmez", "şeker"])):
+            # 🛑 SAĞLIK (Diyabetiklere Sıkı Yasak - Milkshake, Gazoz, Şurup eklendi!)
+            if diyabet_var_mi and (kat_lower in ["tatlı", "tatli"] or any(k in isim_lower or k in malzemeler_db for k in ["çikolata", "cikolata", "pasta", "kek", "bal", "reçel", "recel", "pekmez", "şeker", "milkshake", "meyve suyu", "gazoz", "fanta", "kola", "şurup", "surup", "nektar", "tatlısı", "tatlisi"])):
                 continue
 
-            # 🌟 ÖDÜL PUANI HESAPLAMA (Sevilen Yiyecekler)
-            # Minimize ettiğimiz için sevilen yemeğin skorunu çok düşürüyoruz ki algoritma ona "atlasın"
             skor = random.uniform(1, 100)
-            if any(f in isim_lower or f in malzemeler_db for f in sevilenler):
-                skor -= 10000 
+            if any(f in isim_lower or f in malzemeler_db for f in sevilenler): skor -= 10000 
 
             porsiyon = row.Olcu_Birimi if row.Olcu_Birimi else ""
             y_isim = f"{porsiyon} {row.Yemek_Adı}".strip()
             
-            # 🌟 Akıllı Yulaf Notu
-            if "yulaf" in y_isim.lower() and "lapa" in y_isim.lower() and "laktoz" in alerjiler:
-                y_isim += " (Su veya Bitkisel Süt ile)"
+            # ==========================================
+            # 🌟 GÜÇLENDİRİLMİŞ MİKRO KATEGORİZASYON
+            # ==========================================
+            ozel_kat = "diger"
+            y_isim_lower = y_isim.lower()
+
+            # --- KAHVALTI ---
+            if any(w in y_isim_lower for w in ["ekmek", "börek", "simit", "açma", "poğaça", "tost", "lavaş", "bazlama", "pide", "gevrek", "galeta", "yulaf", "boyoz", "krep", "pankek"]): ozel_kat = "hamur_isi"
+            elif "peynir" in y_isim_lower or "lor" in y_isim_lower: ozel_kat = "peynir"
+            elif any(w in y_isim_lower for w in ["çay", "cay", "kahve", "nescafe", "espresso", "adaçayı", "yeşil çay"]): ozel_kat = "cay_kahve"
+            elif any(w in y_isim_lower for w in ["yumurta", "omlet", "menemen", "çılbır", "sahanda", "sucuk", "sosis", "patates", "kızartma", "kuymak", "mıhlama", "pastırma"]): ozel_kat = "kahvalti_ana"
+            elif any(w in y_isim_lower for w in ["zeytin", "reçel", "recel", "bal", "tereyağ", "tereyag", "fıstık ezmesi", "fındık ezmesi", "domates", "salatalık", "tahin", "pekmez", "söğüş", "sogus", "kaymak"]): ozel_kat = "kahvalti_yan"
+            
+            # --- ARA ÖĞÜN ---
+            elif kat_lower in ["tatlı", "tatli"] or any(w in y_isim_lower for w in ["dondurma", "pasta", "kek", "çikolata", "puding", "sütlaç", "baklava", "kadayıf", "revani", "kazandibi", "muhallebi", "profiterol", "protein bar"]): ozel_kat = "snack_tatli"
+            elif "kuruyemiş" in kat_lower or "çerez" in kat_lower or any(w in y_isim_lower for w in ["fıstık", "badem", "ceviz", "leblebi", "fındık", "kaju", "çekirdek", "kuru", "hurma", "incir"]): ozel_kat = "snack_kuruyemis"
+            elif kat_lower == "meyve" or any(w in y_isim_lower for w in ["elma", "muz", "kayısı", "mandalina", "portakal", "çilek", "kavun", "karpuz", "nar", "şeftali", "kiraz", "vişne", "üzüm", "erik", "armut", "kivi", "ananas"]): ozel_kat = "snack_meyve"
+            elif "içecek" in kat_lower or "icecek" in kat_lower or any(w in y_isim_lower for w in [" suyu", "shake", "ayran", "soda", "kola", "fanta", "gazoz", "kefir", "limonata", "şalgam", "ice tea", "maden suyu", "şurup", "komposto", "hoşaf", "nektar", "milkshake"]) or y_isim_lower.endswith(" su") or y_isim_lower.endswith(" süt"): ozel_kat = "snack_icecek"
+
+            # --- ÖĞLE / AKŞAM ---
+            elif "çorba" in kat_lower or "corba" in kat_lower or "çorbası" in y_isim_lower or "corbasi" in y_isim_lower: ozel_kat = "corba"
+            elif any(w in y_isim_lower for w in ["pilav", "makarna", "erişte", "bulgur", "kuskus", "mantı", "patates püresi", "kısır"]): ozel_kat = "karb_yan"
+            elif any(w in y_isim_lower for w in ["salata", "meze", "yoğurt", "cacık", "piyaz", "tarator", "humus", "şakşuka", "haydari", "fava", "babagannuş", "mücver"]): ozel_kat = "salata_meze"
+            # Fallback for Ana Yemek
+            elif kat_lower in ["ana yemek", "fast food", "sebze", "sebze yemekleri", "baklagil", "baklagiller"] or any(w in y_isim_lower for w in ["et ", "tavuk", "balık", "köfte", "kıyma", "kavurma", "tantuni", "kebap", "döner", "burger", "şiş", "hamsi", "levrek", "iskender", "pizza", "şnitzel", "fasulye", "nohut", "mercimek", "bezelye", "türlü", "musakka", "karnıyarık", "kumpir", "barbunya", "kapuska", "pırasa", "kabak yemeği", "ıspanak", "semizotu", "bamya", "karnabahar"]): ozel_kat = "ana_yemek"
 
             yemekler.append({
                 "id": row.Yemek_Id,
                 "isim": y_isim,
                 "kalori": float(row.Kalori_Kcal),
                 "kategori": row.Kategori,
+                "ozel_kategori": ozel_kat,
                 "protein": float(row.Protein_g),
                 "karb": float(row.Karbonhidrat_g),
                 "yag": float(row.Yag_g),
@@ -125,60 +118,81 @@ def diyet_olustur(hedef_kalori: int, alerjiler: list = None, sevilmeyenler: list
     prob = pulp.LpProblem("Ogunlu_Diyet_Plani", pulp.LpMinimize)
     yemek_degiskenleri = pulp.LpVariable.dicts("Yemek", [y["id"] for y in yemekler], 0, 1, cat='Integer')
     
-    # AMAÇ: Skoru minimize et (Sevilenleri seç, geri kalanı rastgele çeşitlendir)
     prob += pulp.lpSum([yemek_degiskenleri[y["id"]] * y["skor"] for y in yemekler])
 
-    # Makro Hedefleri
     hedef_protein_g = (hedef_kalori * 0.30) / 4
     hedef_karb_g = (hedef_kalori * 0.40) / 4
     hedef_yag_g = (hedef_kalori * 0.30) / 9
 
-    prob += pulp.lpSum([yemek_degiskenleri[y["id"]] * y["kalori"] for y in yemekler]) >= hedef_kalori - 200
-    prob += pulp.lpSum([yemek_degiskenleri[y["id"]] * y["kalori"] for y in yemekler]) <= hedef_kalori + 200
-    prob += pulp.lpSum([yemek_degiskenleri[y["id"]] * y["protein"] for y in yemekler]) >= hedef_protein_g - 40
-    prob += pulp.lpSum([yemek_degiskenleri[y["id"]] * y["karb"] for y in yemekler]) >= hedef_karb_g - 40
-    prob += pulp.lpSum([yemek_degiskenleri[y["id"]] * y["yag"] for y in yemekler]) >= hedef_yag_g - 25
+    prob += pulp.lpSum([yemek_degiskenleri[y["id"]] * y["kalori"] for y in yemekler]) >= hedef_kalori - 300
+    prob += pulp.lpSum([yemek_degiskenleri[y["id"]] * y["kalori"] for y in yemekler]) <= hedef_kalori + 300
+    prob += pulp.lpSum([yemek_degiskenleri[y["id"]] * y["protein"] for y in yemekler]) >= hedef_protein_g - 50
+    prob += pulp.lpSum([yemek_degiskenleri[y["id"]] * y["karb"] for y in yemekler]) >= hedef_karb_g - 50
+    prob += pulp.lpSum([yemek_degiskenleri[y["id"]] * y["yag"] for y in yemekler]) >= hedef_yag_g - 35
 
-    # Öğün Kalori Dağılımları
-    sabah_kat = ["Kahvalti", "Kahvaltı", "Hamur İsi", "Hamur İşi", "Kahvaltılık"]
-    ara_ogun_kat = ["Tatlı", "Tatli", "Meyve", "Atıştırmalık", "Atistirmalik", "İcecek", "İçecek", "Kuruyemis", "Kuruyemiş"]
-
-    sabah_kalori = pulp.lpSum([yemek_degiskenleri[y["id"]] * y["kalori"] for y in yemekler if y["kategori"] in sabah_kat])
-    prob += sabah_kalori >= hedef_kalori * 0.20
-    prob += sabah_kalori <= hedef_kalori * 0.35
-
-    ara_ogun_kalori = pulp.lpSum([yemek_degiskenleri[y["id"]] * y["kalori"] for y in yemekler if y["kategori"] in ara_ogun_kat])
-    prob += ara_ogun_kalori <= hedef_kalori * 0.15
-
-    # 🌟 ÖĞÜN KURALLARI VE MANTIK KISITLARI (Yeni Eklenen Kritik Kısıtlamalar)
+    # ==========================================
+    # 🚨 DİĞER (ÇÖP) TORBASINI YOK ETME KURALI (EN KRİTİK DÜZELTME!)
+    # ==========================================
+    v_diger = [yemek_degiskenleri[y["id"]] for y in yemekler if y["ozel_kategori"] == "diger"]
+    if v_diger: prob += pulp.lpSum(v_diger) == 0  # Kategorisi belirsiz hiçbir yemek SEÇİLEMEZ!
     
-    # Kural 1: Öğle ve Akşam öğünlerine "Kahvaltılık" türü (Pide vb.) bir şey GİREMEZ!
-    # Kural 2: Sabah kahvaltısına "Ana Yemek" türü (Döner, Kelle Paça) GİREMEZ!
-    # (Bunları modelin öğünleri bölme mantığına göre değil, seçilen toplam havuz üzerinden kısıtlıyoruz)
-    sabah_yemegi_adaylari = [yemek_degiskenleri[y["id"]] for y in yemekler if y["kategori"] in sabah_kat]
-    if sabah_yemegi_adaylari: prob += pulp.lpSum(sabah_yemegi_adaylari) >= 1
+    # 1. KAHVALTI KURALLARI (Dinamik Esneklik)
+    v_hamur = [yemek_degiskenleri[y["id"]] for y in yemekler if y["ozel_kategori"] == "hamur_isi"]
+    v_peynir = [yemek_degiskenleri[y["id"]] for y in yemekler if y["ozel_kategori"] == "peynir"]
+    v_cay = [yemek_degiskenleri[y["id"]] for y in yemekler if y["ozel_kategori"] == "cay_kahve"]
+    v_k_ana = [yemek_degiskenleri[y["id"]] for y in yemekler if y["ozel_kategori"] == "kahvalti_ana"]
+    v_k_yan = [yemek_degiskenleri[y["id"]] for y in yemekler if y["ozel_kategori"] == "kahvalti_yan"]
+
+    # Alerjisi yoksa zorunlu, varsa opsiyonel (0 veya 1)
+    if "gluten" not in alerjiler: prob += pulp.lpSum(v_hamur) == 1
+    else: prob += pulp.lpSum(v_hamur) <= 1
     
-    # Kural 3: Günde max 2 çorba
-    tum_corbalar = [yemek_degiskenleri[y["id"]] for y in yemekler if any(k in y["isim"].lower() for k in ["çorba", "corba"])]
-    if tum_corbalar: prob += pulp.lpSum(tum_corbalar) <= 2
+    if "laktoz" not in alerjiler and diyet_turu != "Vegan": prob += pulp.lpSum(v_peynir) == 1
+    else: prob += pulp.lpSum(v_peynir) <= 1
+    
+    prob += pulp.lpSum(v_cay) <= 1
+    if diyet_turu != "Vegan": prob += pulp.lpSum(v_k_ana) <= 1
+    prob += pulp.lpSum(v_k_yan) <= 2
+    
+    # Kahvaltı boş geçilemez, en az 2 çeşit yemek olacak
+    prob += pulp.lpSum(v_hamur) + pulp.lpSum(v_peynir) + pulp.lpSum(v_k_ana) + pulp.lpSum(v_k_yan) >= 2
 
-    # Kahvaltı Standartları
-    sabah_yumurtalar = [yemek_degiskenleri[y["id"]] for y in yemekler if y["kategori"] in sabah_kat and yumurta_mi(y)]
-    if sabah_yumurtalar and "yumurta" not in alerjiler and diyet_turu != "Vegan": prob += pulp.lpSum(sabah_yumurtalar) >= 1
+    # 2. ÖĞLE VE AKŞAM KURALLARI
+    v_ana = [yemek_degiskenleri[y["id"]] for y in yemekler if y["ozel_kategori"] == "ana_yemek"]
+    v_corba = [yemek_degiskenleri[y["id"]] for y in yemekler if y["ozel_kategori"] == "corba"]
+    v_karb = [yemek_degiskenleri[y["id"]] for y in yemekler if y["ozel_kategori"] == "karb_yan"]
+    v_salata = [yemek_degiskenleri[y["id"]] for y in yemekler if y["ozel_kategori"] == "salata_meze"]
 
-    # Öğle ve Akşam Ana Yemekleri Sınırı (Sporcu çöplük öğünü engelleme)
-    # Öğle ve akşam toplam max 2 ana yemek olabilir.
-    ogle_aksam_ana = [yemek_degiskenleri[y["id"]] for y in yemekler if y["kategori"] not in sabah_kat and y["kategori"] not in ara_ogun_kat and ana_yemek_mi(y)]
-    if ogle_aksam_ana: prob += pulp.lpSum(ogle_aksam_ana) <= 2
-    if ogle_aksam_ana: prob += pulp.lpSum(ogle_aksam_ana) >= 1 # En az 1 ana yemek olsun
+    # Öğle ve Akşama KESİNLİKLE 2 Ana Yemek Paylaştırılacak!
+    prob += pulp.lpSum(v_ana) == 2
 
-    # Yan Ürün Sınırı (Çok fazla salata meze yığmasını engelle)
-    yan_urunler = [yemek_degiskenleri[y["id"]] for y in yemekler if y["kategori"] not in sabah_kat and y["kategori"] not in ara_ogun_kat and not ana_yemek_mi(y)]
-    if yan_urunler: prob += pulp.lpSum(yan_urunler) <= 3
+    is_high_cal = hedef_kalori >= 2100 
+    if is_high_cal:
+        prob += pulp.lpSum(v_corba) + pulp.lpSum(v_karb) + pulp.lpSum(v_salata) == 4
+        prob += pulp.lpSum(v_corba) <= 2
+        prob += pulp.lpSum(v_karb) <= 2
+        prob += pulp.lpSum(v_salata) <= 2
+    else:
+        prob += pulp.lpSum(v_corba) + pulp.lpSum(v_karb) + pulp.lpSum(v_salata) == 2
+        prob += pulp.lpSum(v_corba) <= 1
+        prob += pulp.lpSum(v_karb) <= 1
+        prob += pulp.lpSum(v_salata) <= 1
+
+    # 3. ARA ÖĞÜN KURALLARI (Kesinlikle 4 kategoriden sadece 2'si)
+    v_s_icecek = [yemek_degiskenleri[y["id"]] for y in yemekler if y["ozel_kategori"] == "snack_icecek"]
+    v_s_meyve = [yemek_degiskenleri[y["id"]] for y in yemekler if y["ozel_kategori"] == "snack_meyve"]
+    v_s_kuru = [yemek_degiskenleri[y["id"]] for y in yemekler if y["ozel_kategori"] == "snack_kuruyemis"]
+    v_s_tatli = [yemek_degiskenleri[y["id"]] for y in yemekler if y["ozel_kategori"] == "snack_tatli"]
+
+    prob += pulp.lpSum(v_s_icecek) + pulp.lpSum(v_s_meyve) + pulp.lpSum(v_s_kuru) + pulp.lpSum(v_s_tatli) == 2
+    prob += pulp.lpSum(v_s_icecek) <= 1
+    prob += pulp.lpSum(v_s_meyve) <= 1
+    prob += pulp.lpSum(v_s_kuru) <= 1
+    prob += pulp.lpSum(v_s_tatli) <= 1
 
     prob.solve(pulp.PULP_CBC_CMD(msg=False))
     
-    # --- SONUÇLARI PAKETLEME ---
+    # --- SONUÇLARI PAKETLEME (Fallback Tamamen Kalktı) ---
     ogunler = { "Sabah": [], "Öğle_ve_Akşam": [], "Ara_Öğün": [] }
     hesap_kal, hesap_prot, hesap_karb, hesap_yag = 0, 0, 0, 0
     
@@ -186,29 +200,33 @@ def diyet_olustur(hedef_kalori: int, alerjiler: list = None, sevilmeyenler: list
         ana_secilen = []
         yan_secilen = []
 
+        sabah_grup = ["hamur_isi", "peynir", "cay_kahve", "kahvalti_ana", "kahvalti_yan"]
+        ara_grup = ["snack_icecek", "snack_meyve", "snack_kuruyemis", "snack_tatli"]
+        yan_grup = ["corba", "karb_yan", "salata_meze"]
+
         for y in yemekler:
             if yemek_degiskenleri[y["id"]].varValue > 0:
-                if y["kategori"] in sabah_kat: ogunler["Sabah"].append(y)
-                elif y["kategori"] in ara_ogun_kat: ogunler["Ara_Öğün"].append(y)
-                else:
-                    if ana_yemek_mi(y): ana_secilen.append(y)
-                    else: yan_secilen.append(y)
+                kat = y["ozel_kategori"]
+                if kat in sabah_grup: ogunler["Sabah"].append(y)
+                elif kat in ara_grup: ogunler["Ara_Öğün"].append(y)
+                elif kat == "ana_yemek": ana_secilen.append(y)
+                elif kat in yan_grup: yan_secilen.append(y)
                 
                 hesap_kal += y["kalori"]; hesap_prot += y["protein"]
                 hesap_karb += y["karb"]; hesap_yag += y["yag"]
 
-        # Yan yemekleri (çorba, salata vb.) öğünlere mantıklı dağıt
-        if len(ana_secilen) >= 2:
+        # Öğle ve Akşamı Kusursuz Dağıt (Artık listeler tam uyumlu)
+        if len(ana_secilen) == 2:
+            # ÖĞLE
             ogunler["Öğle_ve_Akşam"].append(ana_secilen[0])
-            if yan_secilen: ogunler["Öğle_ve_Akşam"].append(yan_secilen.pop(0))
-            if yan_secilen: ogunler["Öğle_ve_Akşam"].append(yan_secilen.pop(0))
-            
+            if is_high_cal:
+                if yan_secilen: ogunler["Öğle_ve_Akşam"].append(yan_secilen.pop(0))
+                if yan_secilen: ogunler["Öğle_ve_Akşam"].append(yan_secilen.pop(0))
+            else:
+                if yan_secilen: ogunler["Öğle_ve_Akşam"].append(yan_secilen.pop(0))
+                
+            # AKŞAM
             ogunler["Öğle_ve_Akşam"].append(ana_secilen[1])
-            while yan_secilen: ogunler["Öğle_ve_Akşam"].append(yan_secilen.pop(0))
-        elif len(ana_secilen) == 1:
-            ogunler["Öğle_ve_Akşam"].append(ana_secilen[0])
-            while yan_secilen: ogunler["Öğle_ve_Akşam"].append(yan_secilen.pop(0))
-        else:
             while yan_secilen: ogunler["Öğle_ve_Akşam"].append(yan_secilen.pop(0))
 
         return {
