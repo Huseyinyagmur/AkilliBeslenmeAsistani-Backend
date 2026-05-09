@@ -20,7 +20,7 @@ params = urllib.parse.quote_plus(
 engine = create_engine(f'mssql+pyodbc:///?odbc_connect={params}')
 
 
-def diyet_olustur(hedef_kalori: int, alerjiler: list = None, sevilmeyenler: list = None, saglik_sorunlari: list = None, diyet_turu: str = "Standart", sevilenler: list = None):
+def diyet_olustur(hedef_kalori: int, alerjiler: list = None, sevilmeyenler: list = None, saglik_sorunlari: list = None, diyet_turu: str = "Standart", sevilenler: list = None, haric_tutulacak_idler: list = None):
     
     alerjiler = [a.lower() for a in (alerjiler or [])]
     sevilmeyenler = [s.lower() for s in (sevilmeyenler or [])]
@@ -28,13 +28,17 @@ def diyet_olustur(hedef_kalori: int, alerjiler: list = None, sevilmeyenler: list
     saglik_sorunlari = saglik_sorunlari or []
     diyabet_var_mi = "Diyabet" in saglik_sorunlari or "İnsülin Direnci" in saglik_sorunlari
 
+    haric_tutulacak_idler = haric_tutulacak_idler or []
+    haric_str = ", ".join(map(str, haric_tutulacak_idler)) if haric_tutulacak_idler else "-1"
+
     yemekler = []
     with engine.connect() as conn:
-        sorgu = text("""
+        sorgu = text(f"""
             SELECT Yemek_Id, Yemek_Adı, Olcu_Birimi, Kalori_Kcal, Kategori, 
                    Protein_g, Karbonhidrat_g, Yag_g, Baskin_Malzemeler, Alerjen_Bilgisi, Diyet_Turu
             FROM Yemekler 
             WHERE Kalori_Kcal IS NOT NULL AND Protein_g IS NOT NULL AND Karbonhidrat_g IS NOT NULL AND Yag_g IS NOT NULL
+            AND Yemek_Id NOT IN ({haric_str})
         """)
         sonuc = conn.execute(sorgu)
         for row in sonuc:
@@ -51,6 +55,11 @@ def diyet_olustur(hedef_kalori: int, alerjiler: list = None, sevilmeyenler: list
             # 🛑 2. ALERJİ FİLTRESİ (Veritabanı Odaklı)
             if any(a in alerjen_db for a in alerjiler): continue
             
+            # 🛑 3. ÖZEL SAKATAT FİLTRESİ
+            if "sakatat" in sevilmeyenler:
+                if "sakatat" in kat_lower or any(k in malzemeler_db or k in isim_lower for k in ["işkembe", "kelle", "paça", "ciğer", "yürek", "dil"]):
+                    continue
+
             # Sevilmeyenler ve Diyabet 
             if any(s in isim_lower or s in malzemeler_db for s in sevilmeyenler): continue
             if diyabet_var_mi and (kat_lower in ["tatlı", "tatli"] or "şeker" in malzemeler_db or "çikolata" in malzemeler_db or "şurup" in malzemeler_db or "bal" in malzemeler_db): continue
@@ -127,11 +136,18 @@ def diyet_olustur(hedef_kalori: int, alerjiler: list = None, sevilmeyenler: list
     v_k_ana = [yemek_degiskenleri[y["id"]] for y in yemekler if y["ozel_kategori"] == "kahvalti_ana"]
     v_k_yan = [yemek_degiskenleri[y["id"]] for y in yemekler if y["ozel_kategori"] == "kahvalti_yan"]
 
-    prob += pulp.lpSum(v_hamur) <= 1
+    # Karbonhidrat Bombası Engeli (Hamur İşi + Ekmek/Tost/Sandviç)
+    v_k_ana_ekmekli = [yemek_degiskenleri[y["id"]] for y in yemekler if y["ozel_kategori"] == "kahvalti_ana" and any(k in y["isim"].lower() for k in ["tost", "sandviç", "ekmek"])]
+
+    prob += pulp.lpSum(v_hamur) <= 1 # Çift pastry yasağı
     prob += pulp.lpSum(v_peynir) <= 1
     prob += pulp.lpSum(v_cay) <= 1
     prob += pulp.lpSum(v_k_ana) <= 1  
     prob += pulp.lpSum(v_k_yan) <= 4  
+    
+    if v_hamur or v_k_ana_ekmekli:
+        prob += pulp.lpSum(v_hamur) + pulp.lpSum(v_k_ana_ekmekli) <= 1
+
     prob += pulp.lpSum(v_hamur) + pulp.lpSum(v_peynir) + pulp.lpSum(v_k_ana) + pulp.lpSum(v_k_yan) >= 3
 
     # 4. ÖĞLE VE AKŞAM YEMEĞİ KURALLARI (Yan Ürün Dağılımı)
@@ -241,6 +257,37 @@ def diyet_olustur(hedef_kalori: int, alerjiler: list = None, sevilmeyenler: list
         }
     return {"durum": "Başarısız", "mesaj": "Kısıtlamalara uygun menü bulunamadı."}
 
+def haftalik_diyet_olustur(hedef_kalori: int, alerjiler: list = None, sevilmeyenler: list = None, saglik_sorunlari: list = None, diyet_turu: str = "Standart", sevilenler: list = None):
+    gunler = ["Pazartesi", "Salı", "Çarşamba", "Perşembe", "Cuma", "Cumartesi", "Pazar"]
+    haftalik_plan = {}
+    kullanilan_ana_yemekler = []
+
+    for gun in gunler:
+        basarili = False
+        deneme_sayisi = 0
+        while not basarili and deneme_sayisi < 2:
+            sonuc = diyet_olustur(hedef_kalori, alerjiler, sevilmeyenler, saglik_sorunlari, diyet_turu, sevilenler, haric_tutulacak_idler=kullanilan_ana_yemekler)
+            
+            if sonuc["durum"] == "Başarılı":
+                haftalik_plan[gun] = {
+                    "ogunler": sonuc["ogunler"],
+                    "gerceklesen": sonuc["gerceklesen"]
+                }
+                
+                if "Öğle_ve_Akşam" in sonuc["ogunler"]:
+                    for y in sonuc["ogunler"]["Öğle_ve_Akşam"]:
+                        if y.get("ozel_kategori") == "ana_yemek":
+                            kullanilan_ana_yemekler.append(y["id"])
+                
+                basarili = True
+            else:
+                kullanilan_ana_yemekler = []
+                deneme_sayisi += 1
+                
+        if not basarili:
+            haftalik_plan[gun] = {"durum": "Başarısız", "mesaj": "Bu gün için kısıtlamalara uygun menü bulunamadı."}
+
+    return {"durum": "Başarılı", "haftalik_plan": haftalik_plan}
 def bmr_ve_kalori_hesapla(cinsiyet: str, yas: int, boy_cm: float, kilo_kg: float, hareket_katsayisi: float, hedef: str):
     if cinsiyet.lower() == "erkek": bmr = (10 * kilo_kg) + (6.25 * boy_cm) - (5 * yas) + 5
     else: bmr = (10 * kilo_kg) + (6.25 * boy_cm) - (5 * yas) - 161

@@ -91,12 +91,13 @@ def yemekleri_getir():
     
 @app.post("/api/diyet-hazirla")
 def akilli_diyet_olustur(istek: DiyetIstegi):
-    # 🌟 GÜNCELLENDİ: sevilenler backend'e iletiliyor
-    sonuc = diyet_olustur(
+    # 🌟 GÜNCELLENDİ: haftalik_diyet_olustur kullanılıyor
+    from services import haftalik_diyet_olustur
+    sonuc = haftalik_diyet_olustur(
         hedef_kalori=istek.hedef_kalori,
         alerjiler=istek.alerjiler,
         sevilmeyenler=istek.sevilmeyenler,
-        sevilenler=istek.sevilenler, # YENİ EKLENDİ
+        sevilenler=istek.sevilenler,
         saglik_sorunlari=istek.saglik_sorunlari,
         diyet_turu=istek.diyet_turu
     )
