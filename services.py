@@ -65,7 +65,7 @@ def diyet_olustur(hedef_kalori: int, alerjiler: list = None, sevilmeyenler: list
             if diyabet_var_mi and (kat_lower in ["tatlı", "tatli"] or "şeker" in malzemeler_db or "çikolata" in malzemeler_db or "şurup" in malzemeler_db or "bal" in malzemeler_db): continue
 
             skor = random.uniform(1, 100)
-            if any(f in isim_lower or f in malzemeler_db for f in sevilenler): skor -= 10000 
+            if any(f in isim_lower or f in malzemeler_db for f in sevilenler): skor -= 1000
 
             porsiyon = row.Olcu_Birimi if row.Olcu_Birimi else ""
             y_isim = f"{porsiyon} {row.Yemek_Adı}".strip()
@@ -274,9 +274,14 @@ def haftalik_diyet_olustur(hedef_kalori: int, alerjiler: list = None, sevilmeyen
                     "gerceklesen": sonuc["gerceklesen"]
                 }
                 
-                if "Öğle_ve_Akşam" in sonuc["ogunler"]:
-                    for y in sonuc["ogunler"]["Öğle_ve_Akşam"]:
-                        if y.get("ozel_kategori") == "ana_yemek":
+                for ogun_adi, ogun_yemekleri in sonuc["ogunler"].items():
+                    for y in ogun_yemekleri:
+                        kat = y.get("ozel_kategori", "")
+                        isim = y.get("isim", "").lower()
+                        is_su = isim == "su" or isim.endswith(" su")
+                        is_cay_kahve = kat == "cay_kahve"
+                        
+                        if not is_cay_kahve and not is_su:
                             kullanilan_ana_yemekler.append(y["id"])
                 
                 basarili = True
