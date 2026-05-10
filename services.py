@@ -361,10 +361,40 @@ def kullanici_kaydet(email: str, ad: str, cinsiyet: str, yas: int, boy_cm: float
             "kilo": kilo_kg, "hareket": hareket_katsayisi, "hedef_kalori": hedef_kalori
         })
         
+        
     return {
         "mesaj": "Profil başarıyla oluşturuldu veya güncellendi.", 
         "hesaplanan_hedef_kalori": hedef_kalori
     }
+
+def kilo_guncelle(email: str, yeni_kilo: float):
+    with engine.begin() as conn:
+        sorgu = text("SELECT Kilo_kg, Hareket_Katsayisi, Hedef_Kalori FROM Kullanicilar WHERE Email = :email")
+        kullanici = conn.execute(sorgu, {"email": email}).fetchone()
+        
+        if not kullanici:
+            return {"durum": "Hata", "mesaj": "Kullanıcı bulunamadı"}
+            
+        eski_kilo = kullanici.Kilo_kg
+        hareket = kullanici.Hareket_Katsayisi
+        eski_hedef_kalori = kullanici.Hedef_Kalori
+        
+        # BMR değişimi: (10 * yeni_kilo) - (10 * eski_kilo) = 10 * (yeni_kilo - eski_kilo)
+        delta_kalori = 10 * (yeni_kilo - eski_kilo) * hareket
+        yeni_hedef_kalori = int(eski_hedef_kalori + delta_kalori)
+        
+        guncelle_sorgu = text("""
+            UPDATE Kullanicilar 
+            SET Kilo_kg = :yeni_kilo, Hedef_Kalori = :yeni_hedef_kalori
+            WHERE Email = :email
+        """)
+        conn.execute(guncelle_sorgu, {
+            "yeni_kilo": yeni_kilo,
+            "yeni_hedef_kalori": yeni_hedef_kalori,
+            "email": email
+        })
+        
+    return {"durum": "Başarılı", "mesaj": "Kilonuz güncellendi", "yeni_hedef_kalori": yeni_hedef_kalori}
 
 def alternatif_yemek_bul_ml(eski_yemek_id: int, kategori: str, alerjiler: list, sevilmeyenler: list):
     with engine.connect() as conn:

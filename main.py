@@ -177,3 +177,19 @@ def diyet_kaydet(istek: DiyetKayitIstegi):
 def diyet_getir(email: str):
     from services import aktif_menuyu_getir
     return aktif_menuyu_getir(email)
+
+class KiloGuncelleIstegi(BaseModel):
+    email: str
+    weight: float
+
+@app.post("/api/update_weight")
+def update_weight(istek: KiloGuncelleIstegi):
+    from services import kilo_guncelle
+    try:
+        sonuc = kilo_guncelle(istek.email, istek.weight)
+        if sonuc["durum"] == "Başarılı":
+            return sonuc
+        else:
+            raise HTTPException(status_code=404, detail=sonuc["mesaj"])
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
