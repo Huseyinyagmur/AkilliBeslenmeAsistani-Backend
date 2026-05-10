@@ -20,7 +20,7 @@ params = urllib.parse.quote_plus(
 engine = create_engine(f'mssql+pyodbc:///?odbc_connect={params}')
 
 
-def diyet_olustur(hedef_kalori: int, alerjiler: list = None, sevilmeyenler: list = None, saglik_sorunlari: list = None, diyet_turu: str = "Standart", sevilenler: list = None, haric_tutulacak_idler: list = None):
+def diyet_olustur(hedef_kalori: int, alerjiler: list = None, sevilmeyenler: list = None, saglik_sorunlari: list = None, diyet_turu: str = "Standart", sevilenler: list = None, haric_tutulacak_idler: list = None, yasakli_kategoriler: list = None):
     
     alerjiler = [a.lower() for a in (alerjiler or [])]
     sevilmeyenler = [s.lower() for s in (sevilmeyenler or [])]
@@ -31,6 +31,12 @@ def diyet_olustur(hedef_kalori: int, alerjiler: list = None, sevilmeyenler: list
     haric_tutulacak_idler = haric_tutulacak_idler or []
     haric_str = ", ".join(map(str, haric_tutulacak_idler)) if haric_tutulacak_idler else "-1"
 
+    yasakli_kategoriler = yasakli_kategoriler or []
+    kategori_sart = ""
+    if yasakli_kategoriler:
+        yasakli_str = ", ".join([f"'{k}'" for k in yasakli_kategoriler])
+        kategori_sart = f"AND Kategori NOT IN ({yasakli_str})"
+
     yemekler = []
     with engine.connect() as conn:
         sorgu = text(f"""
@@ -39,6 +45,7 @@ def diyet_olustur(hedef_kalori: int, alerjiler: list = None, sevilmeyenler: list
             FROM Yemekler 
             WHERE Kalori_Kcal IS NOT NULL AND Protein_g IS NOT NULL AND Karbonhidrat_g IS NOT NULL AND Yag_g IS NOT NULL
             AND Yemek_Id NOT IN ({haric_str})
+            {kategori_sart}
         """)
         sonuc = conn.execute(sorgu)
         for row in sonuc:
@@ -218,7 +225,7 @@ def diyet_olustur(hedef_kalori: int, alerjiler: list = None, sevilmeyenler: list
     prob.solve(pulp.PULP_CBC_CMD(msg=False))
     
     # --- SONUÇLARI PAKETLEME
-    ogunler = { "Sabah": [], "Öğle_ve_Akşam": [], "Ara_Öğün": [] }
+    ogunler = { "Sabah": [], "Öğle": [], "Akşam": [], "Ara_Öğün": [] }
     hesap_kal, hesap_prot, hesap_karb, hesap_yag = 0, 0, 0, 0
     
     if pulp.LpStatus[prob.status] == 'Optimal':
@@ -242,12 +249,15 @@ def diyet_olustur(hedef_kalori: int, alerjiler: list = None, sevilmeyenler: list
 
         # 2 Ana Yemek Kesin Geleceği İçin Kusursuz Dağılım
         if len(ana_secilen) == 2:
-            ogunler["Öğle_ve_Akşam"].append(ana_secilen[0])
-            if yan_secilen: ogunler["Öğle_ve_Akşam"].append(yan_secilen.pop(0))
-            if is_high_cal and yan_secilen: ogunler["Öğle_ve_Akşam"].append(yan_secilen.pop(0))
+            # 1. AKŞAM YEMEĞİ (Kesinlikle 2 Çeşit): 1 Ana Yemek + En az 1 Yan Yemek
+            ogunler["Akşam"].append(ana_secilen[1])
+            if yan_secilen:
+                ogunler["Akşam"].append(yan_secilen.pop(0))
             
-            ogunler["Öğle_ve_Akşam"].append(ana_secilen[1])
-            while yan_secilen: ogunler["Öğle_ve_Akşam"].append(yan_secilen.pop(0))
+            # 2. ÖĞLE YEMEĞİ (1 veya 2 Çeşit): 1 Ana Yemek + Kalan Yan Yemekler
+            ogunler["Öğle"].append(ana_secilen[0])
+            while yan_secilen:
+                ogunler["Öğle"].append(yan_secilen.pop(0))
 
         return {
             "durum": "Başarılı",
@@ -261,12 +271,18 @@ def haftalik_diyet_olustur(hedef_kalori: int, alerjiler: list = None, sevilmeyen
     gunler = ["Pazartesi", "Salı", "Çarşamba", "Perşembe", "Cuma", "Cumartesi", "Pazar"]
     haftalik_plan = {}
     kullanilan_ana_yemekler = []
+    karb_sayaci = 0
 
     for gun in gunler:
         basarili = False
         deneme_sayisi = 0
+        
+        yasakli_kat = []
+        if karb_sayaci >= 2:
+            yasakli_kat = ["Karb_Yan", "karb_yan"]
+
         while not basarili and deneme_sayisi < 2:
-            sonuc = diyet_olustur(hedef_kalori, alerjiler, sevilmeyenler, saglik_sorunlari, diyet_turu, sevilenler, haric_tutulacak_idler=kullanilan_ana_yemekler)
+            sonuc = diyet_olustur(hedef_kalori, alerjiler, sevilmeyenler, saglik_sorunlari, diyet_turu, sevilenler, haric_tutulacak_idler=kullanilan_ana_yemekler, yasakli_kategoriler=yasakli_kat)
             
             if sonuc["durum"] == "Başarılı":
                 haftalik_plan[gun] = {
@@ -274,6 +290,8 @@ def haftalik_diyet_olustur(hedef_kalori: int, alerjiler: list = None, sevilmeyen
                     "gerceklesen": sonuc["gerceklesen"]
                 }
                 
+                gun_icinde_karb_var = False
+
                 for ogun_adi, ogun_yemekleri in sonuc["ogunler"].items():
                     for y in ogun_yemekleri:
                         kat = y.get("ozel_kategori", "")
@@ -283,6 +301,12 @@ def haftalik_diyet_olustur(hedef_kalori: int, alerjiler: list = None, sevilmeyen
                         
                         if not is_cay_kahve and not is_su:
                             kullanilan_ana_yemekler.append(y["id"])
+                        
+                        if kat == "karb_yan":
+                            gun_icinde_karb_var = True
+                
+                if gun_icinde_karb_var:
+                    karb_sayaci += 1
                 
                 basarili = True
             else:
