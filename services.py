@@ -452,27 +452,41 @@ def alternatif_yemek_bul_ml(eski_yemek_id: int, kategori: str, alerjiler: list, 
                 "kategori": str(yeni_yemek["Kategori"])
             }
         }
-
 def aktif_menuyu_kaydet(email: str, diyet_plani: dict):
     import json
-    with engine.begin() as conn:
-        conn.execute(text("""
-            IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='DiyetKayitlari' and xtype='U')
-            CREATE TABLE DiyetKayitlari (
-                Id INT IDENTITY(1,1) PRIMARY KEY,
-                Email NVARCHAR(255),
-                DiyetJSON NVARCHAR(MAX),
-                KayitTarihi DATETIME DEFAULT GETDATE()
-            )
-        """))
+    from sqlalchemy import text
+    
+    try:
+        # ensure_ascii=False: Türkçe karakterlerin bozulmadan (ç, ş, ğ olarak) veritabanına yazılmasını sağlar!
+        json_verisi = json.dumps(diyet_plani, ensure_ascii=False)
         
-        conn.execute(text("DELETE FROM DiyetKayitlari WHERE Email = :email"), {"email": email})
+        with engine.begin() as conn:
+            # 1. Tablo yoksa oluştur
+            conn.execute(text("""
+                IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='DiyetKayitlari' and xtype='U')
+                CREATE TABLE DiyetKayitlari (
+                    Id INT IDENTITY(1,1) PRIMARY KEY,
+                    Email NVARCHAR(255),
+                    DiyetJSON NVARCHAR(MAX),
+                    KayitTarihi DATETIME DEFAULT GETDATE()
+                )
+            """))
+            
+            # 2. Eski menüyü sil
+            conn.execute(text("DELETE FROM DiyetKayitlari WHERE Email = :email"), {"email": email})
+            
+            # 3. Yeni menüyü kaydet
+            conn.execute(text("""
+                INSERT INTO DiyetKayitlari (Email, DiyetJSON) 
+                VALUES (:email, :json_veri)
+            """), {"email": email, "json_veri": json_verisi})
+            
+        print(f"BAŞARILI: {email} için menü veritabanına kaydedildi.")
+        return {"durum": "kaydedildi"}
         
-        conn.execute(text("""
-            INSERT INTO DiyetKayitlari (Email, DiyetJSON) 
-            VALUES (:email, :json_veri)
-        """), {"email": email, "json_veri": json.dumps(diyet_plani)})
-    return {"durum": "kaydedildi"}
+    except Exception as e:
+        print(f"KRİTİK HATA - aktif_menuyu_kaydet başarısız: {str(e)}")
+        return {"durum": "hata", "hata_mesaji": str(e)}
 
 def aktif_menuyu_getir(email: str):
     import json

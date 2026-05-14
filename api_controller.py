@@ -23,63 +23,81 @@ def chat_endpoint_islemi(user_message: str, user_email: str):
     # 🎯 SENARYO 1: KULLANICI MENÜYÜ GÜNCELLEMEK / YEMEK DEĞİŞTİRMEK İSTİYOR
     # ==========================================
     if intent == "menuyu_guncelle":
-        cikarilacak_yemekler = llm_karari.get("exclude_foods", [])
-        
-        if not cikarilacak_yemekler:
-            return {"status": "success", "reply": "Hangi yemeği değiştirmek istediğini tam anlayamadım, tekrar söyler misin?"}
-            
-        # 1. Kullanıcının aktif menüsünü veritabanından çekiyoruz
         aktif_menu = aktif_menuyu_getir(user_email)
         if not aktif_menu:
-             return {"status": "error", "reply": "Şu an aktif bir menün bulunmuyor. Önce yeni bir menü oluşturalım mı?"}
+             return {"status": "success", "reply": "Şu an aktif bir menün bulunmuyor. Önce yeni bir menü oluşturalım mı?"}
 
-        hedef_yemek_id = None
-        hedef_kategori = None
-        aranan_kelime = None
+        istenmeyen_yemek_listesi = llm_karari.get("exclude_foods", [])
+        if not istenmeyen_yemek_listesi:
+            return {"status": "success", "reply": "Hangi yemeği değiştireceğimi anlayamadım."}
+            
+        def metin_temizle(metin):
+            if not metin: return ""
+            metin = metin.lower()
+            degisimler = {"ç": "c", "ı": "i", "ş": "s", "ğ": "g", "ü": "u", "ö": "o", "i̇": "i"}
+            for eski, yeni in degisimler.items():
+                metin = metin.replace(eski, yeni)
+            return metin
 
-        # 2. Menüde tur atıp kullanıcının sevmediği o yemeği (örneğin pırasayı) buluyoruz
-        for gun, detay in aktif_menu.get("haftalik_plan", {}).items():
-            if detay.get("durum") == "Başarılı":
-                for ogun, yemek_listesi in detay.get("ogunler", {}).items():
-                    for yemek in yemek_listesi:
-                        for istenmeyen_yemek in cikarilacak_yemekler:
-                            if istenmeyen_yemek.lower() in yemek["isim"].lower():
-                                hedef_yemek_id = yemek["id"]
-                                hedef_kategori = yemek["kategori"]
-                                aranan_kelime = istenmeyen_yemek
-                                break # İstenmeyen yemeği bulduk, iç döngüden çık
-                        if hedef_yemek_id:
-                            break # Yemekler döngüsünden çık
-                    if hedef_yemek_id:
-                        break # Öğünler döngüsünden çık
-            if hedef_yemek_id:
-                break # Günler döngüsünden çık
+        aranan_kelime = istenmeyen_yemek_listesi[0]
+        aranan_kelimeler = metin_temizle(aranan_kelime).split()
+        
+        bulunan_yemek_id = None
+        bulunan_kategori = None
+        
+        # 2. Veritabanından gelen aktif menüyü 4 katman derine inerek tara
+        haftalik_plan = aktif_menu.get("haftalik_plan", {})
+        
+        for gun, gun_verisi in haftalik_plan.items():
+            ogunler = gun_verisi.get("ogunler", {})
+            for ogun_adi, yemek_listesi in ogunler.items():
+                for yemek in yemek_listesi:
+                    # Esnek ve Türkçe karakter duyarsız arama
+                    temiz_yemek_ismi = metin_temizle(yemek.get("isim", ""))
+                    
+                    eslesme_bulundu = False
+                    for kelime in aranan_kelimeler:
+                        if len(kelime) > 3 and kelime in temiz_yemek_ismi:
+                            eslesme_bulundu = True
+                            break
+                            
+                    if eslesme_bulundu:
+                        bulunan_yemek_id = yemek.get("id")
+                        bulunan_kategori = yemek.get("kategori", "Ana_Yemek") # Varsayılan kategori
+                        print(f"BULDUM! {gun} {ogun_adi} menüsündeki {yemek.get('isim')} (ID: {bulunan_yemek_id}) değiştirilecek.")
+                        break # Yemeği bulduk, en iç döngüden çık
+                if bulunan_yemek_id: break # Orta döngüden çık
+            if bulunan_yemek_id: break # Dış döngüden çık
 
         # 3. Eğer yemek menüde yoksa halüsinasyonu engelliyoruz
-        if not hedef_yemek_id:
-             arananlar_str = ", ".join(cikarilacak_yemekler)
-             return {"status": "success", "reply": f"Menünde '{arananlar_str}' bulamadım. Başka bir yemeği değiştirmek ister misin?"}
+        if not bulunan_yemek_id:
+            return {"status": "success", "reply": f"Menünde '{aranan_kelime}' bulamadım. Lütfen tam adını söyler misin?"}
 
         # 4. İŞTE BÜYÜK AN: Senin yazdığın Makine Öğrenmesi (KNN) motoru çalışıyor!
         alerjiler = llm_karari.get("allergens", [])
-        yeni_yemek_sonucu = alternatif_yemek_bul_ml(
-            eski_yemek_id=hedef_yemek_id, 
-            kategori=hedef_kategori, 
-            alerjiler=alerjiler, 
-            sevilmeyenler=cikarilacak_yemekler
-        )
+        try:
+            yeni_yemek_sonucu = alternatif_yemek_bul_ml(
+                eski_yemek_id=bulunan_yemek_id, 
+                kategori=bulunan_kategori, 
+                alerjiler=alerjiler,
+                sevilmeyenler=istenmeyen_yemek_listesi
+            )
 
-        if yeni_yemek_sonucu["durum"] == "Başarılı":
-            yeni_isim = yeni_yemek_sonucu['yeni_yemek']['isim']
-            return {
-                "status": "success",
-                "action_taken": "yemek_degistirildi",
-                "reply": f"Harika haber! {aranan_kelime} menüden çıkarıldı. Yerine aynı besin değerlerinde nefis bir {yeni_isim} ekledim.",
-                "ai_data": llm_karari,
-                "yeni_menu_verisi": yeni_yemek_sonucu['yeni_yemek'] # Frontend bu veriyi alıp arayüzü güncelleyecek
-            }
-        else:
-             return {"status": "error", "reply": "Bu kısıtlamalara uygun bir alternatif bulamadım, biraz daha esnek olabilir miyiz?"}
+            if yeni_yemek_sonucu.get("durum") == "Başarılı":
+                yeni_isim = yeni_yemek_sonucu['yeni_yemek']['isim']
+                return {
+                    "status": "success",
+                    "action_taken": "yemek_degistirildi",
+                    "reply": f"Harika haber! {aranan_kelime} menüden çıkarıldı. Yerine aynı besin değerlerinde nefis bir {yeni_isim} ekledim.",
+                    "ai_data": llm_karari,
+                    "yeni_menu_verisi": yeni_yemek_sonucu['yeni_yemek'] # Frontend bu veriyi alıp arayüzü güncelleyecek
+                }
+            else:
+                 return {"status": "error", "reply": "Bu kısıtlamalara uygun bir alternatif bulamadım, biraz daha esnek olabilir miyiz?"}
+                 
+        except Exception as e:
+            print("KNN Hatası:", str(e))
+            return {"status": "error", "reply": "Alternatif yemek ararken matematiksel bir hata oluştu."}
 
     # ==========================================
     # 🎯 SENARYO 2: YENİ MENÜ OLUŞTURMA İSTEĞİ
@@ -109,7 +127,7 @@ def chat_endpoint_islemi(user_message: str, user_email: str):
             diyet_turu=diyet_turu
         )
         
-        if sonuc["durum"] == "Başarılı":
+        if sonuc.get("durum") == "Başarılı":
             aktif_menuyu_kaydet(user_email, sonuc)
             return {
                 "status": "success",
@@ -121,7 +139,6 @@ def chat_endpoint_islemi(user_message: str, user_email: str):
         else:
             return {"status": "error", "reply": "Bu kısıtlamalara uygun tam bir menü oluşturamadım, biraz daha esnek olabilir miyiz?"}
 
-
     # ==========================================
     # 🎯 SENARYO 3: ALAKASIZ SORU / GÜVENLİK DUVARI
     # ==========================================
@@ -129,7 +146,7 @@ def chat_endpoint_islemi(user_message: str, user_email: str):
         return {
             "status": "success",
             "action_taken": "none",
-            "reply": "Ben DocuMind'ın beslenme ve yaşam tarzı asistanıyım. Bu konuda uzman değilim ama sağlıklı beslenme hedeflerin hakkında konuşmaktan mutluluk duyarım!"
+            "reply": "Ben NexText'in beslenme ve yaşam tarzı asistanıyım. Bu konuda uzman değilim ama sağlıklı beslenme hedeflerin hakkında konuşmaktan mutluluk duyarım!"
         }
 
     # ==========================================
