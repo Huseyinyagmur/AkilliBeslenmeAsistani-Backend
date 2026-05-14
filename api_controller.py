@@ -35,21 +35,30 @@ def chat_endpoint_islemi(user_message: str, user_email: str):
 
         hedef_yemek_id = None
         hedef_kategori = None
-        aranan_kelime = cikarilacak_yemekler[0].lower()
+        aranan_kelime = None
 
         # 2. Menüde tur atıp kullanıcının sevmediği o yemeği (örneğin pırasayı) buluyoruz
         for gun, detay in aktif_menu.get("haftalik_plan", {}).items():
             if detay.get("durum") == "Başarılı":
                 for ogun, yemek_listesi in detay.get("ogunler", {}).items():
                     for yemek in yemek_listesi:
-                        if aranan_kelime in yemek["isim"].lower():
-                            hedef_yemek_id = yemek["id"]
-                            hedef_kategori = yemek["kategori"]
-                            break # Yemeği bulduk, döngüden çık
+                        for istenmeyen_yemek in cikarilacak_yemekler:
+                            if istenmeyen_yemek.lower() in yemek["isim"].lower():
+                                hedef_yemek_id = yemek["id"]
+                                hedef_kategori = yemek["kategori"]
+                                aranan_kelime = istenmeyen_yemek
+                                break # İstenmeyen yemeği bulduk, iç döngüden çık
+                        if hedef_yemek_id:
+                            break # Yemekler döngüsünden çık
+                    if hedef_yemek_id:
+                        break # Öğünler döngüsünden çık
+            if hedef_yemek_id:
+                break # Günler döngüsünden çık
 
         # 3. Eğer yemek menüde yoksa halüsinasyonu engelliyoruz
         if not hedef_yemek_id:
-             return {"status": "success", "reply": f"Menünde '{aranan_kelime}' bulamadım. Başka bir yemeği değiştirmek ister misin?"}
+             arananlar_str = ", ".join(cikarilacak_yemekler)
+             return {"status": "success", "reply": f"Menünde '{arananlar_str}' bulamadım. Başka bir yemeği değiştirmek ister misin?"}
 
         # 4. İŞTE BÜYÜK AN: Senin yazdığın Makine Öğrenmesi (KNN) motoru çalışıyor!
         alerjiler = llm_karari.get("allergens", [])
