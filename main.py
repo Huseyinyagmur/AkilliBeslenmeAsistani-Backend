@@ -193,3 +193,18 @@ def update_weight(istek: KiloGuncelleIstegi):
             raise HTTPException(status_code=404, detail=sonuc["mesaj"])
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+class ChatRequest(BaseModel):
+    user_message: str
+    user_email: str
+
+@app.post("/api/chat")
+async def chat_with_assistant(request: ChatRequest):
+    from api_controller import chat_endpoint_islemi
+    try:
+        response = chat_endpoint_islemi(request.user_message, request.user_email)
+        return response
+    except Exception as e:
+        print(f"Chatbot Hatası: {str(e)}")
+        raise HTTPException(status_code=500, detail="Asistan şu an biraz yoğun, lütfen tekrar dene.")
+
