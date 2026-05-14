@@ -549,3 +549,26 @@ def genel_bilgi_sorusunu_cevapla(user_message: str) -> str:
     except Exception as e:
         print(f"Ollama bilgi_ver hatası: {e}")
         return "Şu an bilgi sistemlerimde kısa süreli bir yoğunluk var, bana birazdan tekrar sorabilir misin?"
+
+def sohbeti_kaydet(email: str, user_message: str, ai_reply: str):
+    from sqlalchemy import text
+    try:
+        with engine.begin() as conn:
+            conn.execute(text("""
+                IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='SohbetKayitlari' and xtype='U')
+                CREATE TABLE SohbetKayitlari (
+                    Id INT IDENTITY(1,1) PRIMARY KEY,
+                    Email NVARCHAR(255),
+                    UserMessage NVARCHAR(MAX),
+                    AIMessage NVARCHAR(MAX),
+                    Tarih DATETIME DEFAULT GETDATE()
+                )
+            """))
+            
+            conn.execute(text("""
+                INSERT INTO SohbetKayitlari (Email, UserMessage, AIMessage)
+                VALUES (:email, :user_message, :ai_reply)
+            """), {"email": email, "user_message": user_message, "ai_reply": ai_reply})
+            
+    except Exception as e:
+        print(f"Sohbet kaydetme hatası: {e}")

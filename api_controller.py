@@ -143,10 +143,13 @@ def chat_endpoint_islemi(user_message: str, user_email: str):
     # 🎯 SENARYO 3: ALAKASIZ SORU / GÜVENLİK DUVARI
     # ==========================================
     elif intent == "bilgi_ver":
-        from services import genel_bilgi_sorusunu_cevapla
+        from services import genel_bilgi_sorusunu_cevapla, sohbeti_kaydet
         
         # Kullanıcının sorusunu doğrudan Llama-3'e normal bir sohbet gibi soruyoruz
         llm_cevabi = genel_bilgi_sorusunu_cevapla(user_message)
+        
+        # Sohbet geçmişini kaydet
+        sohbeti_kaydet(user_email, user_message, llm_cevabi)
         
         return {
             "status": "success",
