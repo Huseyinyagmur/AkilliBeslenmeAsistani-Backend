@@ -527,8 +527,25 @@ def kullanici_kontrol_et(email: str):
                     "hareket_katsayisi": sonuc.Hareket_Katsayisi,
                     "hedef_kalori": sonuc.Hedef_Kalori
                 }
-            
             return {"kayitli_mi": False, "durum": "kayitsiz"}
         except Exception as e:
             print(f"Kullanici kontrol hatası: {e}")
             return {"kayitli_mi": False, "durum": "hata", "mesaj": str(e)}
+
+def genel_bilgi_sorusunu_cevapla(user_message: str) -> str:
+    import ollama
+    
+    system_prompt = "Sen NexText'in profesyonel, samimi ve motive edici diyetisyen asistanısın. Kullanıcının beslenme, diyet veya sağlıklı yaşam ile ilgili sorusuna kısa, öz (maksimum 3-4 cümle) ve bilimsel olarak doğru bir cevap ver. JSON üretme, normal metin olarak konuş. KESİNLİKLE VE SADECE TÜRKÇE DİLİNDE CEVAP VER. İNGİLİZCE VEYA BAŞKA BİR DİL KULLANMA."
+    
+    try:
+        response = ollama.chat(
+            model='llama3',
+            messages=[
+                {'role': 'system', 'content': system_prompt},
+                {'role': 'user', 'content': user_message}
+            ]
+        )
+        return response['message']['content']
+    except Exception as e:
+        print(f"Ollama bilgi_ver hatası: {e}")
+        return "Şu an bilgi sistemlerimde kısa süreli bir yoğunluk var, bana birazdan tekrar sorabilir misin?"

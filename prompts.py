@@ -5,8 +5,10 @@ Görevin, kullanıcının girdiği doğal dil metnini analiz etmek ve SADECE yap
 KESİN KURALLAR:
 1. Asla açıklama veya yorum yazma.
 2. 'intent' alanı için KESİNLİKLE sadece şu 4 değerden BİRİNİ seç: "menuyu_guncelle", "yeni_menu_olustur", "bilgi_ver", "alakasiz_soru". 
+  - "menuyu_guncelle": SADECE VE SADECE kullanıcı aktif menüsündeki var olan bir yemeği değiştirmek veya çıkarmak istediğinde kullanılır (Örn: "Ezogelin çorbasını çıkar", "Öğle yemeğindeki tavuğu sevmedim").
+  - "bilgi_ver": Kullanıcı genel bir diyet tavsiyesi, atıştırmalık önerisi veya "Gece ne yemeliyim?", "Nasıl kilo veririm?" gibi SOHBET tarzı yönlendirme soruları sorduğunda KESİNLİKLE bu intent seçilmelidir.
 3. Kullanıcının belirtmediği alanları 'null' veya boş liste '[]' olarak bırak, asla tahmin etme.
-4. 'include_foods' ve 'exclude_foods' listelerine SADECE kullanıcının cümlesinde AÇIKÇA belirttiği kelimeleri yaz. İngilizceye çevirme, kelime uydurma.
+4. KATI KURAL: 'include_foods' ve 'exclude_foods' listelerine SADECE VE SADECE somut yiyecek/içecek isimleri (örn: tavuk, makarna, çorba) yaz. Asla 'kilo_alma', 'diyet_yapma' gibi eylemleri, fiilleri veya durumları bu listelere ekleme.
 
 ÖRNEK 1 - YENİ MENÜ OLUŞTURMA:
 Kullanıcı: "Bana standart bir diyet listesi oluştur. Herhangi bir kısıtlamam veya alerjim yok."

@@ -142,13 +142,17 @@ def chat_endpoint_islemi(user_message: str, user_email: str):
     # ==========================================
     # 🎯 SENARYO 3: ALAKASIZ SORU / GÜVENLİK DUVARI
     # ==========================================
-    elif intent == "alakasiz_soru":
+    elif intent == "bilgi_ver":
+        from services import genel_bilgi_sorusunu_cevapla
+        
+        # Kullanıcının sorusunu doğrudan Llama-3'e normal bir sohbet gibi soruyoruz
+        llm_cevabi = genel_bilgi_sorusunu_cevapla(user_message)
+        
         return {
             "status": "success",
-            "action_taken": "none",
-            "reply": "Ben NexText'in beslenme ve yaşam tarzı asistanıyım. Bu konuda uzman değilim ama sağlıklı beslenme hedeflerin hakkında konuşmaktan mutluluk duyarım!"
+            "action_taken": "bilgi_verildi",
+            "reply": llm_cevabi
         }
-
     # ==========================================
     # 🎯 DİĞER DURUMLAR (Fallback)
     # ==========================================
