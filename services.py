@@ -144,8 +144,9 @@ def diyet_olustur(hedef_kalori: int, alerjiler: list = None, sevilmeyenler: list
                 else: ozel_kat = "snack_kuruyemis"
 
             # 🚨 AŞAMA 1: KATEGORİK FİLTRELEME (PRE-FILTERING)
-            if goal == "kilo_verme":
-                if str(row.Kategori).strip() == "Tatlı" or ozel_kat == "snack_tatli":
+            if goal == "kilo_verme" or hedef_kalori < 2200:
+                kat_clean = str(row.Kategori).strip().lower()
+                if kat_clean == "tatlı" or kat_clean == "fast food" or ozel_kat == "snack_tatli" or (kat_clean == "ana_yemek" and "fast food" in kat_lower):
                     continue
 
             yemekler.append({
@@ -183,57 +184,47 @@ def diyet_olustur(hedef_kalori: int, alerjiler: list = None, sevilmeyenler: list
     v_diger = [yemek_degiskenleri[y["id"]] for y in yemekler if y["ozel_kategori"] == "diger"]
     if v_diger: prob += pulp.lpSum(v_diger) == 0
 
-    # 1. KAHVALTI (Kategori Bazlı Temiz Kurallar)
-    v_hamur = [yemek_degiskenleri[y["id"]] for y in yemekler if y["ozel_kategori"] == "hamur_isi"]
-    v_peynir = [yemek_degiskenleri[y["id"]] for y in yemekler if y["ozel_kategori"] == "peynir"]
-    v_cay = [yemek_degiskenleri[y["id"]] for y in yemekler if y["ozel_kategori"] == "cay_kahve"]
+    # 1. KAHVALTI (Kategori Bazlı Kati Kurallar - Hard Constraints)
     v_k_ana = [yemek_degiskenleri[y["id"]] for y in yemekler if y["ozel_kategori"] == "kahvalti_ana"]
-    v_k_yan = [yemek_degiskenleri[y["id"]] for y in yemekler if y["ozel_kategori"] == "kahvalti_yan"]
+    v_k_yan = [yemek_degiskenleri[y["id"]] for y in yemekler if y["ozel_kategori"] in ["kahvalti_yan", "peynir"]]
+    v_hamur = [yemek_degiskenleri[y["id"]] for y in yemekler if y["ozel_kategori"] == "hamur_isi"]
+    v_cay = [yemek_degiskenleri[y["id"]] for y in yemekler if y["ozel_kategori"] == "cay_kahve"]
 
-    # Karbonhidrat Bombası Engeli (Hamur İşi + Ekmek/Tost/Sandviç)
-    v_k_ana_ekmekli = [yemek_degiskenleri[y["id"]] for y in yemekler if y["ozel_kategori"] == "kahvalti_ana" and any(k in y["isim"].lower() for k in ["tost", "sandviç", "ekmek"])]
-
-    prob += pulp.lpSum(v_hamur) <= 1 # Çift pastry yasağı
-    prob += pulp.lpSum(v_peynir) <= 1
+    prob += pulp.lpSum(v_k_ana) == 1 # KESİNLİKLE tam 1 adet ana kahvaltılık
+    prob += pulp.lpSum(v_k_yan) >= 1 # KESİNLİKLE 1 veya 2 adet yan ürün
+    prob += pulp.lpSum(v_k_yan) <= 2
+    prob += pulp.lpSum(v_hamur) <= 1 
     prob += pulp.lpSum(v_cay) <= 1
-    prob += pulp.lpSum(v_k_ana) <= 1  
-    prob += pulp.lpSum(v_k_yan) <= 4  
+
+    # 4. ÖĞLE VE AKŞAM YEMEĞİ ŞABLONU (Kati Kurallar)
+    v_ana_yemek = [yemek_degiskenleri[y["id"]] for y in yemekler if y["ozel_kategori"] == "ana_yemek"]
+    v_yan_urun = [yemek_degiskenleri[y["id"]] for y in yemekler if y["ozel_kategori"] in ["corba", "salata_meze", "karb_yan"]]
     
-    if v_hamur or v_k_ana_ekmekli:
-        prob += pulp.lpSum(v_hamur) + pulp.lpSum(v_k_ana_ekmekli) <= 1
+    # Toplam: Öğle(1 Ana, 1 Yan) + Akşam(1 Ana, 2 Yan)
+    prob += pulp.lpSum(v_ana_yemek) == 2 # 1 Öğle, 1 Akşam
+    prob += pulp.lpSum(v_yan_urun) == 3  # 1 Öğle, 2 Akşam
 
-    prob += pulp.lpSum(v_hamur) + pulp.lpSum(v_peynir) + pulp.lpSum(v_k_ana) + pulp.lpSum(v_k_yan) + pulp.lpSum(v_cay) <= 3
+    # Ekstra Sınırlar (Çorba ve Karbonhidrat Patlamasını Engellemek İçin)
+    v_corba = [yemek_degiskenleri[y["id"]] for y in yemekler if y["ozel_kategori"] == "corba"]
+    prob += pulp.lpSum(v_corba) <= 1
 
-    # 4. ÖĞLE VE AKŞAM YEMEĞİ KURALLARI (Yan Ürün Dağılımı)
-    v_ogle_aksam_all = [yemek_degiskenleri[y["id"]] for y in yemekler if y["ozel_kategori"] in ["ana_yemek", "corba", "karb_yan", "salata_meze"]]
-    prob += pulp.lpSum(v_ogle_aksam_all) <= 6
-
-    # Kategori Sınırı (Kati Kısıtlamalar)
-    v_kategori_corba = [yemek_degiskenleri[y["id"]] for y in yemekler if y["kategori"] == "Corba"]
-    v_kategori_ana = [yemek_degiskenleri[y["id"]] for y in yemekler if y["kategori"] == "Ana_Yemek"]
-    
-    prob += pulp.lpSum(v_kategori_corba) <= 1
-    prob += pulp.lpSum(v_kategori_ana) <= 1
-
-    # 5. ARA ÖĞÜN KURALLARI (Sürdürülebilirlik ve Çeşitlilik)
-    v_s_icecek = [yemek_degiskenleri[y["id"]] for y in yemekler if y["ozel_kategori"] == "snack_icecek"]
-    v_s_meyve = [yemek_degiskenleri[y["id"]] for y in yemekler if y["ozel_kategori"] == "snack_meyve"]
-    v_s_kuru = [yemek_degiskenleri[y["id"]] for y in yemekler if y["ozel_kategori"] == "snack_kuruyemis"]
-    v_s_tatli = [yemek_degiskenleri[y["id"]] for y in yemekler if y["ozel_kategori"] == "snack_tatli"]
-
-    prob += pulp.lpSum(v_s_icecek) + pulp.lpSum(v_s_meyve) + pulp.lpSum(v_s_kuru) + pulp.lpSum(v_s_tatli) <= 2
+    # 5. ARA ÖĞÜN ŞABLONU (Kati Kurallar)
+    v_ara_ogun_tum = [yemek_degiskenleri[y["id"]] for y in yemekler if y["ozel_kategori"] in ["snack_icecek", "snack_meyve", "snack_kuruyemis", "snack_tatli"]]
+    prob += pulp.lpSum(v_ara_ogun_tum) >= 1
+    prob += pulp.lpSum(v_ara_ogun_tum) <= 2
 
     # 6. ÖĞÜN KALORİ DENGE KURALLARI (Kalori Uçurumunu Engelleme)
     sabah_kat_listesi = ["hamur_isi", "peynir", "cay_kahve", "kahvalti_ana", "kahvalti_yan"]
     ara_kat_listesi = ["snack_icecek", "snack_meyve", "snack_kuruyemis", "snack_tatli"]
+    ogle_aksam_listesi = ["ana_yemek", "corba", "karb_yan", "salata_meze"]
 
     sabah_kalorisi = pulp.lpSum([yemek_degiskenleri[y["id"]] * y["kalori"] for y in yemekler if y["ozel_kategori"] in sabah_kat_listesi])
     ara_ogun_kalorisi = pulp.lpSum([yemek_degiskenleri[y["id"]] * y["kalori"] for y in yemekler if y["ozel_kategori"] in ara_kat_listesi])
+    ogle_aksam_kalorisi = pulp.lpSum([yemek_degiskenleri[y["id"]] * y["kalori"] for y in yemekler if y["ozel_kategori"] in ogle_aksam_listesi])
 
-    prob += sabah_kalorisi >= hedef_kalori * 0.15
-    prob += sabah_kalorisi <= hedef_kalori * 0.35
-    prob += ara_ogun_kalorisi >= hedef_kalori * 0.05
-    prob += ara_ogun_kalorisi <= hedef_kalori * 0.15
+    prob += sabah_kalorisi <= hedef_kalori * 0.40 # Sabah max 40%
+    prob += ara_ogun_kalorisi <= hedef_kalori * 0.15 # Ara öğün limit
+    prob += ogle_aksam_kalorisi <= hedef_kalori * 0.90 # Toplam Öğle ve Akşam limiti (0.45 * 2 = 0.90)
 
     # ========================================================
     # 🚨 7. ANTİ-SPAM VE ÇEŞİTLİLİK KURALLARI (Data-Driven)
@@ -283,13 +274,20 @@ def diyet_olustur(hedef_kalori: int, alerjiler: list = None, sevilmeyenler: list
                 hesap_kal += y["kalori"]; hesap_prot += y["protein"]
                 hesap_karb += y["karb"]; hesap_yag += y["yag"]
 
-        # Dinamik Dağılım: Öğle ve Akşam için maksimum 3'er çeşit olacak şekilde paylaştır
-        tum_ogle_aksam = ana_secilen + yan_secilen
-        for y in tum_ogle_aksam:
-            if len(ogunler["Akşam"]) < 3:
-                ogunler["Akşam"].append(y)
-            elif len(ogunler["Öğle"]) < 3:
+        # Kati Şablon Dağılımı: Öğle (1 Ana, 1 Yan), Akşam (1 Ana, 2 Yan)
+        if len(ana_secilen) >= 2:
+            ogunler["Öğle"].append(ana_secilen[0])
+            ogunler["Akşam"].append(ana_secilen[1])
+        else: # Güvenlik yedeği
+            for y in ana_secilen:
+                if len(ogunler["Öğle"]) == 0: ogunler["Öğle"].append(y)
+                else: ogunler["Akşam"].append(y)
+
+        for y in yan_secilen:
+            if len(ogunler["Öğle"]) < 2: # 1 ana zaten eklendi, 1 yan daha eklenince toplam 2 olur
                 ogunler["Öğle"].append(y)
+            else:
+                ogunler["Akşam"].append(y)
 
         return {
             "durum": "Başarılı",
