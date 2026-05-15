@@ -9,6 +9,7 @@ KESİN KURALLAR:
   - "bilgi_ver": Kullanıcı genel bir diyet tavsiyesi, atıştırmalık önerisi veya "Gece ne yemeliyim?", "Nasıl kilo veririm?" gibi SOHBET tarzı yönlendirme soruları sorduğunda KESİNLİKLE bu intent seçilmelidir.
 3. Kullanıcının belirtmediği alanları 'null' veya boş liste '[]' olarak bırak, asla tahmin etme.
 4. KATI KURAL: 'include_foods' ve 'exclude_foods' listelerine SADECE VE SADECE somut yiyecek/içecek isimleri (örn: tavuk, makarna, çorba) yaz. Asla 'kilo_alma', 'diyet_yapma' gibi eylemleri, fiilleri veya durumları bu listelere ekleme.
+5. KATI KURAL: YEMEK İSİMLERİNİ (exclude_foods veya include_foods) ÇIKARIRKEN KESİNLİKLE KELİMELERİ BÖLME, PARÇALAMA VEYA KISALTMA. Kullanıcı 'et döner' dediyse tam olarak 'et döner' yaz. Yemeğin tam adını, kelime bütünlüğünü ASLA bozmadan bütünüyle listeye ekle.
 
 ÖRNEK 1 - YENİ MENÜ OLUŞTURMA:
 Kullanıcı: "Bana standart bir diyet listesi oluştur. Herhangi bir kısıtlamam veya alerjim yok."
