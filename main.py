@@ -27,6 +27,8 @@ params = urllib.parse.quote_plus(
     f'SERVER={server_adi};'
     f'DATABASE={veritabani_adi};'
     f'Trusted_Connection=yes;'
+    f'Encrypt=no;'
+    f'TrustServerCertificate=yes;'
 )
 engine = create_engine(f'mssql+pyodbc:///?odbc_connect={params}')
 # -----------------------------
@@ -207,4 +209,4 @@ async def chat_with_assistant(request: ChatRequest):
     except Exception as e:
         print(f"Chatbot Hatası: {str(e)}")
         raise HTTPException(status_code=500, detail="Asistan şu an biraz yoğun, lütfen tekrar dene.")
-
+

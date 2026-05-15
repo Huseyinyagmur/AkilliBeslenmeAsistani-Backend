@@ -15,6 +15,8 @@ params = urllib.parse.quote_plus(
     f'SERVER={server_adi};'
     f'DATABASE={veritabani_adi};'
     f'Trusted_Connection=yes;'
+    f'Encrypt=no;'
+    f'TrustServerCertificate=yes;'
 )
 
 print("MSSQL'e bağlanılıyor...")
