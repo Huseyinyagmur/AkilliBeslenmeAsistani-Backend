@@ -10,6 +10,12 @@ KESİN KURALLAR:
 3. Kullanıcının belirtmediği alanları 'null' veya boş liste '[]' olarak bırak, asla tahmin etme.
 4. KATI KURAL: 'include_foods' ve 'exclude_foods' listelerine SADECE VE SADECE somut yiyecek/içecek isimleri (örn: tavuk, makarna, çorba) yaz. Asla 'kilo_alma', 'diyet_yapma' gibi eylemleri, fiilleri veya durumları bu listelere ekleme.
 5. KATI KURAL: YEMEK İSİMLERİNİ (exclude_foods veya include_foods) ÇIKARIRKEN KESİNLİKLE KELİMELERİ BÖLME, PARÇALAMA VEYA KISALTMA. Kullanıcı 'et döner' dediyse tam olarak 'et döner' yaz. Yemeğin tam adını, kelime bütünlüğünü ASLA bozmadan bütünüyle listeye ekle.
+6. KATI KURAL: Yemek isimlerini KESİNLİKLE YALIN HALDE (hiçbir Türkçe ek almamış kök haliyle) yaz. Kullanıcının cümlesindeki ismin hal eklerini (iyelik, belirtme, yönelme vb.) temizle.
+Örnekler:
+- 'makarnayı' -> 'makarna'
+- 'et döneri' -> 'et döner'
+- 'çorbayı' -> 'çorba'
+- 'kuzu şişi' -> 'kuzu şiş'
 
 ÖRNEK 1 - YENİ MENÜ OLUŞTURMA:
 Kullanıcı: "Bana standart bir diyet listesi oluştur. Herhangi bir kısıtlamam veya alerjim yok."
