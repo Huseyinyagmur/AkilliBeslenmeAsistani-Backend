@@ -20,11 +20,48 @@ params = urllib.parse.quote_plus(
 engine = create_engine(f'mssql+pyodbc:///?odbc_connect={params}')
 
 
-def diyet_olustur(hedef_kalori: int, alerjiler: list = None, sevilmeyenler: list = None, saglik_sorunlari: list = None, diyet_turu: str = "Standart", sevilenler: list = None, haric_tutulacak_idler: list = None, yasakli_kategoriler: list = None):
+def normalize_tr(metin: str) -> str:
+    if not metin: return ""
+    return str(metin).lower().replace('ı', 'i').replace('ö', 'o').replace('ü', 'u').replace('ç', 'c').replace('ş', 's').replace('ğ', 'g')
+
+
+def diyet_olustur(hedef_kalori: int, alerjiler: list = None, sevilmeyenler: list = None, saglik_sorunlari: list = None, diyet_turu: str = "Standart", sevilenler: list = None, haric_tutulacak_idler: list = None, yasakli_kategoriler: list = None, ai_data: dict = None):
+    
+    if ai_data and ai_data.get('age') and ai_data.get('weight') and ai_data.get('height') and ai_data.get('gender'):
+        age = ai_data['age']
+        weight = ai_data['weight']
+        height = ai_data['height']
+        gender = ai_data['gender']
+        activity_level = ai_data.get('activity_level') or 'hareketsiz'
+        goal = ai_data.get('goal') or 'koruma'
+
+        if gender.lower() == 'erkek':
+            bmr = (10 * weight) + (6.25 * height) - (5 * age) + 5
+        else:
+            bmr = (10 * weight) + (6.25 * height) - (5 * age) - 161
+
+        activity_multipliers = {
+            'hareketsiz': 1.2,
+            'az_hareketli': 1.375,
+            'orta': 1.55,
+            'cok_hareketli': 1.725
+        }
+        tdee = bmr * activity_multipliers.get(activity_level, 1.2)
+
+        if goal == 'kilo_verme':
+            hedef_kalori = int(tdee - 500)
+        elif goal == 'kilo_alma':
+            hedef_kalori = int(tdee + 500)
+        else:
+            hedef_kalori = int(tdee)
     
     alerjiler = [a.lower() for a in (alerjiler or [])]
     sevilmeyenler = [s.lower() for s in (sevilmeyenler or [])]
     sevilenler = [f.lower() for f in (sevilenler or [])]
+    
+    alerjiler_norm = [normalize_tr(a) for a in alerjiler]
+    sevilmeyenler_norm = [normalize_tr(s) for s in sevilmeyenler]
+    
     saglik_sorunlari = saglik_sorunlari or []
     diyabet_var_mi = "Diyabet" in saglik_sorunlari or "İnsülin Direnci" in saglik_sorunlari
 
@@ -55,12 +92,15 @@ def diyet_olustur(hedef_kalori: int, alerjiler: list = None, sevilmeyenler: list
             alerjen_db = str(row.Alerjen_Bilgisi).lower() if row.Alerjen_Bilgisi else ""
             diyet_turu_db = str(row.Diyet_Turu).lower() if hasattr(row, 'Diyet_Turu') and row.Diyet_Turu else ""
 
+            isim_norm = normalize_tr(isim_lower)
+            malz_norm = normalize_tr(malzemeler_db)
+
             # 🛑 1. DİYET TÜRÜ FİLTRESİ (Veritabanı Odaklı)
             if diyet_turu.lower() == "vegan" and diyet_turu_db != "vegan": continue
             if diyet_turu.lower() == "vejetaryen" and diyet_turu_db not in ["vegan", "vejetaryen"]: continue
             
-            # 🛑 2. ALERJİ FİLTRESİ (Veritabanı Odaklı)
-            if any(a in alerjen_db for a in alerjiler): continue
+            # 🛑 2. ALERJİ FİLTRESİ (Genişletilmiş Alt Metin Araması)
+            if any(a in isim_norm or a in malz_norm for a in alerjiler_norm): continue
             
             # 🛑 3. ÖZEL SAKATAT FİLTRESİ
             if "sakatat" in sevilmeyenler:
@@ -68,7 +108,7 @@ def diyet_olustur(hedef_kalori: int, alerjiler: list = None, sevilmeyenler: list
                     continue
 
             # Sevilmeyenler ve Diyabet 
-            if any(s in isim_lower or s in malzemeler_db for s in sevilmeyenler): continue
+            if any(s in isim_norm or s in malz_norm for s in sevilmeyenler_norm): continue
             if diyabet_var_mi and (kat_lower in ["tatlı", "tatli"] or "şeker" in malzemeler_db or "çikolata" in malzemeler_db or "şurup" in malzemeler_db or "bal" in malzemeler_db): continue
 
             skor = random.uniform(1, 100)
@@ -267,7 +307,7 @@ def diyet_olustur(hedef_kalori: int, alerjiler: list = None, sevilmeyenler: list
         }
     return {"durum": "Başarısız", "mesaj": "Kısıtlamalara uygun menü bulunamadı."}
 
-def haftalik_diyet_olustur(hedef_kalori: int, alerjiler: list = None, sevilmeyenler: list = None, saglik_sorunlari: list = None, diyet_turu: str = "Standart", sevilenler: list = None):
+def haftalik_diyet_olustur(hedef_kalori: int, alerjiler: list = None, sevilmeyenler: list = None, saglik_sorunlari: list = None, diyet_turu: str = "Standart", sevilenler: list = None, ai_data: dict = None):
     gunler = ["Pazartesi", "Salı", "Çarşamba", "Perşembe", "Cuma", "Cumartesi", "Pazar"]
     haftalik_plan = {}
     kullanilan_ana_yemekler = []
@@ -282,7 +322,7 @@ def haftalik_diyet_olustur(hedef_kalori: int, alerjiler: list = None, sevilmeyen
             yasakli_kat = ["Karb_Yan", "karb_yan"]
 
         while not basarili and deneme_sayisi < 2:
-            sonuc = diyet_olustur(hedef_kalori, alerjiler, sevilmeyenler, saglik_sorunlari, diyet_turu, sevilenler, haric_tutulacak_idler=kullanilan_ana_yemekler, yasakli_kategoriler=yasakli_kat)
+            sonuc = diyet_olustur(hedef_kalori, alerjiler, sevilmeyenler, saglik_sorunlari, diyet_turu, sevilenler, haric_tutulacak_idler=kullanilan_ana_yemekler, yasakli_kategoriler=yasakli_kat, ai_data=ai_data)
             
             if sonuc["durum"] == "Başarılı":
                 haftalik_plan[gun] = {
