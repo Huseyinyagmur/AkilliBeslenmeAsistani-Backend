@@ -68,12 +68,85 @@ def chat_endpoint_islemi(user_message: str, user_email: str, profile: dict | Non
     confidence = llm_karari.get("confidence", 0)
     if target_service == "INTENT_GENERATE_MENU":
         intent = "yeni_menu_olustur"
+    if intent == "ogun_degistir" and "confidence" not in llm_karari:
+        confidence = 1.0
     
     # Güvenlik Ağı: Model emin değilse saçmalamasını engelle
     if confidence < 0.6:
         return {
             "status": "error",
             "reply": "Ne demek istediğini tam anlayamadım, biraz daha detaylı yazar mısın?"
+        }
+
+    if intent == "ogun_degistir":
+        from services import kullanici_kontrol_et, haftalik_diyet_olustur, aktif_menuyu_kaydet
+
+        profil_kisitlari = profil_kisitlarini_cikar(profile)
+        kullanici = {"kayitli_mi": True, "hedef_kalori": profil_kisitlari.get("hedef_kalori", 2000)}
+
+        if not profil_kisitlari:
+            kullanici = kullanici_kontrol_et(user_email)
+
+        if not kullanici.get("kayitli_mi"):
+            return {
+                "status": "error",
+                "reply": "Lutfen once profil bilgilerini doldur, ardindan menundeki ogunleri guncelleyebilirim."
+            }
+
+        istenmeyen_yemek = llm_karari.get("istenmeyen_yemek")
+        if not istenmeyen_yemek:
+            exclude_foods = llm_karari.get("exclude_foods") or []
+            istenmeyen_yemek = exclude_foods[0] if exclude_foods else None
+
+        if not istenmeyen_yemek:
+            return {
+                "status": "success",
+                "reply": "Hangi yemegi degistirecegimi anlayamadim. Gun, ogun ve yemek adini birlikte yazar misin?"
+            }
+
+        mevcut_sevilmeyenler = profil_kisitlari.get("sevilmeyenler") or []
+        llm_sevilmeyenler = llm_karari.get("exclude_foods") or []
+        sevilmeyenler = list(dict.fromkeys(mevcut_sevilmeyenler + llm_sevilmeyenler + [istenmeyen_yemek]))
+
+        hedef_kalori = kullanici.get("hedef_kalori", 2000)
+        alerjiler = list(dict.fromkeys((profil_kisitlari.get("alerjiler") or []) + (llm_karari.get("allergens", []) or [])))
+        sevilenler = list(dict.fromkeys((profil_kisitlari.get("sevilenler") or []) + (llm_karari.get("include_foods", []) or [])))
+        saglik_sorunlari = list(dict.fromkeys((profil_kisitlari.get("saglik_sorunlari") or []) + (llm_karari.get("health_conditions", []) or [])))
+        diyet_turu = llm_karari.get("diet_type") or profil_kisitlari.get("diyet_turu") or "Standart"
+
+        sonuc = haftalik_diyet_olustur(
+            hedef_kalori=hedef_kalori,
+            alerjiler=alerjiler,
+            sevilmeyenler=sevilmeyenler,
+            sevilenler=sevilenler,
+            saglik_sorunlari=saglik_sorunlari,
+            diyet_turu=diyet_turu,
+            ai_data=llm_karari,
+        )
+
+        if sonuc.get("haftalik_plan"):
+            aktif_menuyu_kaydet(user_email, sonuc)
+            hedef_gun = llm_karari.get("hedef_gun")
+            hedef_ogun = llm_karari.get("hedef_ogun") or llm_karari.get("meal_type")
+            hedef_metni = " ".join(str(parca) for parca in [hedef_gun, hedef_ogun] if parca)
+            if hedef_metni:
+                reply = f"{hedef_metni} ogununu senin icin guncelliyorum. {istenmeyen_yemek} yeni planda disarida birakildi."
+            else:
+                reply = f"Menunu senin icin guncelledim. {istenmeyen_yemek} yeni planda disarida birakildi."
+
+            return {
+                "status": "success",
+                "action": "menu_updated",
+                "action_taken": "ogun_degistirildi",
+                "reply": reply,
+                "ai_data": llm_karari,
+                "menuData": sonuc,
+                "yeni_menu_verisi": sonuc
+            }
+
+        return {
+            "status": "error",
+            "reply": "Bu degisiklikle tam ve dengeli bir haftalik menu olusturamadim. Kisitlari biraz azaltabilir miyiz?"
         }
 
     # ==========================================
