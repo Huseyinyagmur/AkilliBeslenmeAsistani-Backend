@@ -1,303 +1,435 @@
-from nlp_parser import parse_user_intent
-from services import alternatif_yemek_bul_ml, diyet_olustur, aktif_menuyu_getir
-import json
+"""
+api_controller.py — Hibrit NLP Intent Yönlendirici
+====================================================
+Mimari:
+  Aşama 1 → Kural tabanlı Python string eşleştirme (Öğün > Gün > Tüm Menü)
+  Aşama 2 → LLM fallback (yalnızca genel bilgi soruları için)
+  Güvenlik → LLM çıktısı her zaman string formatına zorlanır; JSON sızıntısı engellenir
+"""
 
-def metni_normalize_et(metin: str) -> str:
+import re
+from nlp_parser import parse_user_intent
+
+# ──────────────────────────────────────────────
+# 1. KELIME SÖZLÜKLERİ
+# ──────────────────────────────────────────────
+
+GUNLER: dict[str, str] = {
+    "pazartesi": "Pazartesi",
+    "sali":      "Salı",
+    "salı":      "Salı",
+    "carsamba":  "Çarşamba",
+    "çarşamba":  "Çarşamba",
+    "persembe":  "Perşembe",
+    "perşembe":  "Perşembe",
+    "cuma":      "Cuma",
+    "cumartesi": "Cumartesi",
+    "pazar":     "Pazar",
+}
+
+OGUNLER: dict[str, str] = {
+    "sabah":    "Sabah",
+    "kahvalti": "Sabah",
+    "kahvaltı": "Sabah",
+    "ogle":     "Öğle",
+    "öğle":     "Öğle",
+    "aksam":    "Akşam",
+    "akşam":    "Akşam",
+    "ara":      "Ara_Öğün",
+    "ara öğün": "Ara_Öğün",
+    "ara ogun": "Ara_Öğün",
+}
+
+# Menü değiştirme niyeti tetikleyicileri
+DEGISIM_KELIMELERI = [
+    "değiştir", "degistir", "yenile", "başka", "baska",
+    "farklı", "farkli", "çıkar", "cikar", "istemiyorum",
+    "istmiyorum", "yerine", "güncelle", "guncelle",
+]
+
+# Yeni menü oluşturma tetikleyicileri
+YENI_MENU_KELIMELERI_CIFT = [
+    ("yeni", "menü"), ("yeni", "menu"),
+    ("yeni", "diyet"), ("menü", "oluştur"),
+    ("menu", "olustur"), ("diyet", "oluştur"),
+    ("diyet", "olustur"), ("menü", "yap"),
+    ("menu", "yap"), ("menü", "hazırla"),
+    ("menu", "hazirla"), ("menü", "ver"),
+    ("menu", "ver"), ("yeni", "liste"),
+    ("haftalık", "oluştur"), ("haftalik", "olustur"),
+]
+
+
+# ──────────────────────────────────────────────
+# 2. YARDIMCI FONKSİYONLAR
+# ──────────────────────────────────────────────
+
+def normalize(metin: str) -> str:
+    """Türkçe karakterleri ASCII'ye indirgeyip küçük harf yapar."""
     return (
-        str(metin or "")
-        .lower()
-        .replace("ı", "i").replace("ö", "o").replace("ü", "u").replace("ç", "c").replace("ş", "s").replace("ğ", "g")
-        .replace("İ", "i").replace("Ö", "o").replace("Ü", "u").replace("Ç", "c").replace("Ş", "s").replace("Ğ", "g")
-        .replace("�", "i").replace("i̇", "i")
+        str(metin or "").lower()
+        .replace("ı", "i").replace("ö", "o").replace("ü", "u")
+        .replace("ç", "c").replace("ş", "s").replace("ğ", "g")
+        .replace("İ", "i").replace("Ö", "o").replace("Ü", "u")
+        .replace("Ç", "c").replace("Ş", "s").replace("Ğ", "g")
     )
 
-def menu_olusturma_istegi_mi(user_message: str) -> bool:
-    metin = metni_normalize_et(user_message)
-    guncelleme_kelimeleri = ["degistir", "cikar", "çıkar", "sevmedim", "istemiyorum", "yerine", "alternatif"]
-    if any(kelime in metin for kelime in guncelleme_kelimeleri):
-        return False
 
-    menu_kelimeleri = [
-        "menu olustur", "menu hazirla", "menu yap", "menü oluştur", "menü hazırla",
-        "diyet listesi", "liste yap", "beslenme plani", "beslenme planı",
-        "haftalik menu", "haftalik liste", "7 gunluk menu", "7 gunluk liste"
-    ]
-    return any(kelime in metin for kelime in menu_kelimeleri)
+def gun_cikar(metin_norm: str) -> str | None:
+    """Normalize edilmiş metinden gün adını çıkarır."""
+    # Önce çift kelimeli eşleşmeler (örn: "çarşamba")
+    for anahtar, gun in GUNLER.items():
+        if normalize(anahtar) in metin_norm:
+            return gun
+    return None
 
-def profil_var_mi(profile: dict | None) -> bool:
-    return isinstance(profile, dict) and bool(profile)
+
+def ogun_cikar(metin_norm: str) -> str | None:
+    """Normalize edilmiş metinden öğün adını çıkarır."""
+    # Çift kelimeli önce
+    for anahtar in ["ara öğün", "ara ogun"]:
+        if normalize(anahtar) in metin_norm:
+            return "Ara_Öğün"
+    for anahtar, ogun in OGUNLER.items():
+        if normalize(anahtar) in metin_norm:
+            return ogun
+    return None
+
+
+def degisim_var_mi(metin_norm: str) -> bool:
+    """Mesajda değişim isteği var mı?"""
+    return any(normalize(k) in metin_norm for k in DEGISIM_KELIMELERI)
+
+
+def yeni_menu_istegi_var_mi(metin_norm: str) -> bool:
+    """Mesajda yeni menü oluşturma isteği var mı?"""
+    return any(
+        normalize(a) in metin_norm and normalize(b) in metin_norm
+        for a, b in YENI_MENU_KELIMELERI_CIFT
+    )
+
+
+def menu_json_sizintisi_mi(value) -> bool:
+    """LLM çıktısında menü JSON'u var mı kontrol eder."""
+    if isinstance(value, dict):
+        yasakli = {"menu", "menuler", "ogunler", "gun", "haftalik_plan", "yemekler", "guncellemeler"}
+        norm_keys = {normalize(k) for k in value.keys()}
+        if norm_keys & yasakli:
+            return True
+        return any(menu_json_sizintisi_mi(v) for v in value.values())
+    if isinstance(value, list):
+        return any(isinstance(i, (dict, list)) or menu_json_sizintisi_mi(i) for i in value)
+    return False
+
+
+def guvenli_response(reply, action=None) -> dict:
+    """Her zaman güvenli {reply, action} formatı döner."""
+    if isinstance(reply, (dict, list)) or menu_json_sizintisi_mi(reply):
+        reply = "Bunu tam anlayamadım, mevcut menünü baştan oluşturmamı ister misin?"
+        action = None
+    if not isinstance(reply, str):
+        reply = str(reply or "")
+    if action not in ("menu_created", "menu_updated", None):
+        action = None
+    return {"reply": reply, "action": action}
+
 
 def profil_kisitlarini_cikar(profile: dict | None) -> dict:
-    if not profil_var_mi(profile):
+    if not isinstance(profile, dict) or not profile:
         return {}
-
     secimler = profile.get("secimler") or {}
     fiziksel = profile.get("kullaniciFiziksel") or {}
-
     return {
-        "hedef_kalori": profile.get("yapayZekaHedefKalori") or fiziksel.get("hedef_kalori") or 2000,
-        "alerjiler": secimler.get("allergies") or secimler.get("alerjiler") or [],
-        "sevilmeyenler": secimler.get("dislikedFoods") or secimler.get("sevilmeyenler") or [],
-        "sevilenler": secimler.get("likedFoods") or secimler.get("sevilenler") or [],
+        "hedef_kalori":    profile.get("yapayZekaHedefKalori") or fiziksel.get("hedef_kalori") or 2000,
+        "alerjiler":       secimler.get("allergies") or secimler.get("alerjiler") or [],
+        "sevilmeyenler":   secimler.get("dislikedFoods") or secimler.get("sevilmeyenler") or [],
+        "sevilenler":      secimler.get("likedFoods") or secimler.get("sevilenler") or [],
         "saglik_sorunlari": secimler.get("healthIssues") or secimler.get("saglik_sorunlari") or [],
-        "diyet_turu": secimler.get("dietType") or secimler.get("diyet_turu") or "Standart",
+        "diyet_turu":      secimler.get("dietType") or secimler.get("diyet_turu") or "Standart",
     }
 
-def chat_endpoint_islemi(user_message: str, user_email: str, profile: dict | None = None):
-    if menu_olusturma_istegi_mi(user_message):
-        llm_karari = {
-            "intent": "yeni_menu_olustur",
-            "confidence": 1.0,
-            "target_service": "INTENT_GENERATE_MENU",
-            "operation": "generate",
-            "allergens": [],
-            "exclude_foods": [],
-            "include_foods": [],
-            "health_conditions": [],
-            "diet_type": None,
+
+# ──────────────────────────────────────────────
+# 3. BACKEND SERVİS ÇAĞRILARI
+# ──────────────────────────────────────────────
+
+def _profil_ile_haftalik_menu_uret(user_email: str, profile: dict | None, ai_data: dict | None = None) -> bool:
+    """Haftalık menüyü profil kısıtlarıyla PuLP motoruna ürettirip kaydeder."""
+    from services import aktif_menuyu_kaydet, haftalik_diyet_olustur, kullanici_kontrol_et
+
+    ai_data = ai_data or {}
+    kisitlar = profil_kisitlarini_cikar(profile)
+
+    if kisitlar:
+        kullanici = {"kayitli_mi": True, "hedef_kalori": kisitlar.get("hedef_kalori", 2000)}
+    else:
+        kullanici = kullanici_kontrol_et(user_email)
+
+    if not kullanici.get("kayitli_mi"):
+        return False
+
+    sonuc = haftalik_diyet_olustur(
+        hedef_kalori=kullanici.get("hedef_kalori", 2000),
+        alerjiler=list(dict.fromkeys((kisitlar.get("alerjiler") or []) + (ai_data.get("allergens") or []))),
+        sevilmeyenler=list(dict.fromkeys((kisitlar.get("sevilmeyenler") or []) + (ai_data.get("exclude_foods") or []))),
+        sevilenler=list(dict.fromkeys((kisitlar.get("sevilenler") or []) + (ai_data.get("include_foods") or []))),
+        saglik_sorunlari=list(dict.fromkeys((kisitlar.get("saglik_sorunlari") or []) + (ai_data.get("health_conditions") or []))),
+        diyet_turu=ai_data.get("diet_type") or kisitlar.get("diyet_turu") or "Standart",
+        ai_data=ai_data,
+    )
+
+    if sonuc.get("haftalik_plan"):
+        aktif_menuyu_kaydet(user_email, sonuc)
+        return True
+    return False
+
+
+def _tek_gun_menu_uret(user_email: str, profile: dict | None, hedef_gun: str) -> bool:
+    """
+    Mevcut haftalık menüyü DB'den çekip sadece hedef_gun'u yeniden üretir,
+    sonra tüm planı geri kaydeder.
+    """
+    from services import (
+        aktif_menuyu_getir, aktif_menuyu_kaydet,
+        diyet_olustur, kullanici_kontrol_et,
+    )
+
+    kisitlar = profil_kisitlarini_cikar(profile)
+    if kisitlar:
+        hedef_kalori = kisitlar.get("hedef_kalori", 2000)
+    else:
+        kullanici = kullanici_kontrol_et(user_email)
+        if not kullanici.get("kayitli_mi"):
+            return False
+        hedef_kalori = kullanici.get("hedef_kalori", 2000)
+
+    mevcut = aktif_menuyu_getir(user_email)
+    if not mevcut or not mevcut.get("haftalik_plan"):
+        # Mevcut menü yoksa tamamen yeni üret
+        return _profil_ile_haftalik_menu_uret(user_email, profile)
+
+    yeni_gun_sonuc = diyet_olustur(
+        hedef_kalori=hedef_kalori,
+        alerjiler=kisitlar.get("alerjiler") or [],
+        sevilmeyenler=kisitlar.get("sevilmeyenler") or [],
+        saglik_sorunlari=kisitlar.get("saglik_sorunlari") or [],
+        diyet_turu=kisitlar.get("diyet_turu") or "Standart",
+        sevilenler=kisitlar.get("sevilenler") or [],
+    )
+
+    if yeni_gun_sonuc.get("durum") != "Başarılı":
+        return False
+
+    haftalik_plan = mevcut["haftalik_plan"]
+    haftalik_plan[hedef_gun] = {
+        "ogunler":    yeni_gun_sonuc["ogunler"],
+        "gerceklesen": yeni_gun_sonuc["gerceklesen"],
+    }
+    aktif_menuyu_kaydet(user_email, {"durum": "Başarılı", "haftalik_plan": haftalik_plan})
+    return True
+
+
+def _tek_ogun_uret(user_email: str, profile: dict | None, hedef_gun: str, hedef_ogun: str) -> bool:
+    """
+    Mevcut haftalık menüden sadece hedef_gun'un hedef_ogun öğününü yeniler.
+    """
+    from services import (
+        aktif_menuyu_getir, aktif_menuyu_kaydet,
+        diyet_olustur, kullanici_kontrol_et,
+    )
+
+    kisitlar = profil_kisitlarini_cikar(profile)
+    if kisitlar:
+        hedef_kalori = kisitlar.get("hedef_kalori", 2000)
+    else:
+        kullanici = kullanici_kontrol_et(user_email)
+        if not kullanici.get("kayitli_mi"):
+            return False
+        hedef_kalori = kullanici.get("hedef_kalori", 2000)
+
+    mevcut = aktif_menuyu_getir(user_email)
+    if not mevcut or not mevcut.get("haftalik_plan"):
+        return _profil_ile_haftalik_menu_uret(user_email, profile)
+
+    # Öğün için yeni tek günlük menü üret, sadece ilgili öğünü al
+    yeni_gun_sonuc = diyet_olustur(
+        hedef_kalori=hedef_kalori,
+        alerjiler=kisitlar.get("alerjiler") or [],
+        sevilmeyenler=kisitlar.get("sevilmeyenler") or [],
+        saglik_sorunlari=kisitlar.get("saglik_sorunlari") or [],
+        diyet_turu=kisitlar.get("diyet_turu") or "Standart",
+        sevilenler=kisitlar.get("sevilenler") or [],
+    )
+
+    if yeni_gun_sonuc.get("durum") != "Başarılı":
+        return False
+
+    haftalik_plan = mevcut["haftalik_plan"]
+    # Eğer gün yoksa boş oluştur
+    if hedef_gun not in haftalik_plan:
+        haftalik_plan[hedef_gun] = {"ogunler": {}, "gerceklesen": {}}
+
+    # Sadece ilgili öğünü güncelle
+    yeni_ogun_yemekleri = yeni_gun_sonuc["ogunler"].get(hedef_ogun, [])
+    if not yeni_ogun_yemekleri:
+        # Öğün adı eşleşmesi yoksa tüm günü yenile
+        haftalik_plan[hedef_gun] = {
+            "ogunler":    yeni_gun_sonuc["ogunler"],
+            "gerceklesen": yeni_gun_sonuc["gerceklesen"],
         }
     else:
-        llm_karari = parse_user_intent(user_message, profile)
-    
-    # Llama-3'ün ürettiği ham JSON'ı terminale yazdıralım:
-    print("--- LLM KARARI ---")
-    print(llm_karari)
-    
-    intent = llm_karari.get("intent")
-    target_service = llm_karari.get("target_service")
-    confidence = llm_karari.get("confidence", 0)
-    if target_service == "INTENT_GENERATE_MENU":
-        intent = "yeni_menu_olustur"
-    if intent == "ogun_degistir" and "confidence" not in llm_karari:
-        confidence = 1.0
-    
-    # Güvenlik Ağı: Model emin değilse saçmalamasını engelle
-    if confidence < 0.6:
-        return {
-            "status": "error",
-            "reply": "Ne demek istediğini tam anlayamadım, biraz daha detaylı yazar mısın?"
-        }
+        haftalik_plan[hedef_gun]["ogunler"][hedef_ogun] = yeni_ogun_yemekleri
 
-    if intent == "ogun_degistir":
-        from services import kullanici_kontrol_et, haftalik_diyet_olustur, aktif_menuyu_kaydet
+    aktif_menuyu_kaydet(user_email, {"durum": "Başarılı", "haftalik_plan": haftalik_plan})
+    return True
 
-        profil_kisitlari = profil_kisitlarini_cikar(profile)
-        kullanici = {"kayitli_mi": True, "hedef_kalori": profil_kisitlari.get("hedef_kalori", 2000)}
 
-        if not profil_kisitlari:
-            kullanici = kullanici_kontrol_et(user_email)
+# ──────────────────────────────────────────────
+# 4. AŞAMA 1 — KURAL TABANLI INTENT TESPİTİ
+# ──────────────────────────────────────────────
 
-        if not kullanici.get("kayitli_mi"):
-            return {
-                "status": "error",
-                "reply": "Lutfen once profil bilgilerini doldur, ardindan menundeki ogunleri guncelleyebilirim."
-            }
+def kural_tabanli_intent_isle(user_message: str, user_email: str, profile: dict | None) -> dict | None:
+    """
+    Kademeli NLP tespiti:
+      A. Selam / karşılama
+      B. Yeni menü oluşturma
+      C. Öğün değişimi (gün + öğün)
+      D. Gün değişimi (sadece gün)
+      E. Genel değişim (gün/öğün belirtilmemiş ama değiştirme niyeti var)
+    Hiçbiri eşleşmezse None döner → LLM fallback'e geçilir.
+    """
+    metin = normalize(user_message)
 
-        istenmeyen_yemek = llm_karari.get("istenmeyen_yemek")
-        if not istenmeyen_yemek:
-            exclude_foods = llm_karari.get("exclude_foods") or []
-            istenmeyen_yemek = exclude_foods[0] if exclude_foods else None
+    # A. KARŞILAMA
+    if any(k in metin for k in ["selam", "merhaba", "nasilsin", "iyi misin"]):
+        return guvenli_response("Merhaba! Ben senin beslenme asistanınım. Menün, tarifler veya sağlıklı yaşam hedeflerin hakkında yardımcı olabilirim. 😊", None)
 
-        if not istenmeyen_yemek:
-            return {
-                "status": "success",
-                "reply": "Hangi yemegi degistirecegimi anlayamadim. Gun, ogun ve yemek adini birlikte yazar misin?"
-            }
+    # B. YENİ MENÜ OLUŞTURMA
+    if yeni_menu_istegi_var_mi(metin):
+        basarili = _profil_ile_haftalik_menu_uret(user_email, profile, {"intent": "yeni_menu_olustur", "operation": "generate"})
+        if basarili:
+            return guvenli_response("Harika! 7 günlük tüm menünü yepyeni tariflerle ve profil ayarlarına göre baştan oluşturdum. Listeden kontrol edebilirsin! 🥗", "menu_created")
+        return guvenli_response("Bu kısıtlamalarla yeni menü oluşturamadım. Kısıtlarını biraz azaltabilir miyiz?", None)
 
-        mevcut_sevilmeyenler = profil_kisitlari.get("sevilmeyenler") or []
-        llm_sevilmeyenler = llm_karari.get("exclude_foods") or []
-        sevilmeyenler = list(dict.fromkeys(mevcut_sevilmeyenler + llm_sevilmeyenler + [istenmeyen_yemek]))
+    # Değişim kelimesi var mı?
+    if not degisim_var_mi(metin):
+        return None  # → LLM fallback
 
-        hedef_kalori = kullanici.get("hedef_kalori", 2000)
-        alerjiler = list(dict.fromkeys((profil_kisitlari.get("alerjiler") or []) + (llm_karari.get("allergens", []) or [])))
-        sevilenler = list(dict.fromkeys((profil_kisitlari.get("sevilenler") or []) + (llm_karari.get("include_foods", []) or [])))
-        saglik_sorunlari = list(dict.fromkeys((profil_kisitlari.get("saglik_sorunlari") or []) + (llm_karari.get("health_conditions", []) or [])))
-        diyet_turu = llm_karari.get("diet_type") or profil_kisitlari.get("diyet_turu") or "Standart"
+    hedef_gun  = gun_cikar(metin)
+    hedef_ogun = ogun_cikar(metin)
 
-        sonuc = haftalik_diyet_olustur(
-            hedef_kalori=hedef_kalori,
-            alerjiler=alerjiler,
-            sevilmeyenler=sevilmeyenler,
-            sevilenler=sevilenler,
-            saglik_sorunlari=saglik_sorunlari,
-            diyet_turu=diyet_turu,
-            ai_data=llm_karari,
-        )
-
-        if sonuc.get("haftalik_plan"):
-            aktif_menuyu_kaydet(user_email, sonuc)
-            hedef_gun = llm_karari.get("hedef_gun")
-            hedef_ogun = llm_karari.get("hedef_ogun") or llm_karari.get("meal_type")
-            hedef_metni = " ".join(str(parca) for parca in [hedef_gun, hedef_ogun] if parca)
-            if hedef_metni:
-                reply = f"{hedef_metni} ogununu senin icin guncelliyorum. {istenmeyen_yemek} yeni planda disarida birakildi."
-            else:
-                reply = f"Menunu senin icin guncelledim. {istenmeyen_yemek} yeni planda disarida birakildi."
-
-            return {
-                "status": "success",
-                "action": "menu_updated",
-                "action_taken": "ogun_degistirildi",
-                "reply": reply,
-                "ai_data": llm_karari,
-                "menuData": sonuc,
-                "yeni_menu_verisi": sonuc
-            }
-
-        return {
-            "status": "error",
-            "reply": "Bu degisiklikle tam ve dengeli bir haftalik menu olusturamadim. Kisitlari biraz azaltabilir miyiz?"
-        }
-
-    # ==========================================
-    # 🎯 SENARYO 1: KULLANICI MENÜYÜ GÜNCELLEMEK / YEMEK DEĞİŞTİRMEK İSTİYOR
-    # ==========================================
-    if intent == "menuyu_guncelle":
-        aktif_menu = aktif_menuyu_getir(user_email)
-        if not aktif_menu:
-             return {"status": "success", "reply": "Şu an aktif bir menün bulunmuyor. Önce yeni bir menü oluşturalım mı?"}
-
-        istenmeyen_yemek_listesi = llm_karari.get("exclude_foods", [])
-        if not istenmeyen_yemek_listesi:
-            return {"status": "success", "reply": "Hangi yemeği değiştireceğimi anlayamadım."}
-            
-        def metin_temizle(metin):
-            if not metin: return ""
-            metin = metin.lower()
-            degisimler = {"ç": "c", "ı": "i", "ş": "s", "ğ": "g", "ü": "u", "ö": "o", "i̇": "i"}
-            for eski, yeni in degisimler.items():
-                metin = metin.replace(eski, yeni)
-            return metin
-
-        aranan_kelime = istenmeyen_yemek_listesi[0]
-        aranan_kelimeler = metin_temizle(aranan_kelime).split()
-        
-        bulunan_yemek_id = None
-        bulunan_kategori = None
-        
-        # 2. Veritabanından gelen aktif menüyü 4 katman derine inerek tara
-        haftalik_plan = aktif_menu.get("haftalik_plan", {})
-        
-        for gun, gun_verisi in haftalik_plan.items():
-            ogunler = gun_verisi.get("ogunler", {})
-            for ogun_adi, yemek_listesi in ogunler.items():
-                for yemek in yemek_listesi:
-                    # Esnek ve Türkçe karakter duyarsız arama
-                    temiz_yemek_ismi = metin_temizle(yemek.get("isim", ""))
-                    
-                    eslesme_bulundu = False
-                    for kelime in aranan_kelimeler:
-                        if len(kelime) > 3 and kelime in temiz_yemek_ismi:
-                            eslesme_bulundu = True
-                            break
-                            
-                    if eslesme_bulundu:
-                        bulunan_yemek_id = yemek.get("id")
-                        bulunan_kategori = yemek.get("kategori", "Ana_Yemek") # Varsayılan kategori
-                        print(f"BULDUM! {gun} {ogun_adi} menüsündeki {yemek.get('isim')} (ID: {bulunan_yemek_id}) değiştirilecek.")
-                        break # Yemeği bulduk, en iç döngüden çık
-                if bulunan_yemek_id: break # Orta döngüden çık
-            if bulunan_yemek_id: break # Dış döngüden çık
-
-        # 3. Eğer yemek menüde yoksa halüsinasyonu engelliyoruz
-        if not bulunan_yemek_id:
-            return {"status": "success", "reply": f"Menünde '{aranan_kelime}' bulamadım. Lütfen tam adını söyler misin?"}
-
-        # 4. İŞTE BÜYÜK AN: Senin yazdığın Makine Öğrenmesi (KNN) motoru çalışıyor!
-        alerjiler = llm_karari.get("allergens", [])
-        try:
-            yeni_yemek_sonucu = alternatif_yemek_bul_ml(
-                eski_yemek_id=bulunan_yemek_id, 
-                kategori=bulunan_kategori, 
-                alerjiler=alerjiler,
-                sevilmeyenler=istenmeyen_yemek_listesi
+    # C. HEM GÜN HEM ÖĞÜN VAR → tek öğün güncelle
+    if hedef_gun and hedef_ogun:
+        basarili = _tek_ogun_uret(user_email, profile, hedef_gun, hedef_ogun)
+        if basarili:
+            return guvenli_response(
+                f"{hedef_gun} günü {hedef_ogun} yemeğini senin için yeni alternatiflerle değiştirdim. Afiyet olsun! 🍽️",
+                "menu_updated",
             )
-
-            if yeni_yemek_sonucu.get("durum") == "Başarılı":
-                yeni_isim = yeni_yemek_sonucu['yeni_yemek']['isim']
-                return {
-                    "status": "success",
-                    "action_taken": "yemek_degistirildi",
-                    "reply": f"Harika haber! {aranan_kelime} menüden çıkarıldı. Yerine aynı besin değerlerinde nefis bir {yeni_isim} ekledim.",
-                    "ai_data": llm_karari,
-                    "yeni_menu_verisi": yeni_yemek_sonucu['yeni_yemek'] # Frontend bu veriyi alıp arayüzü güncelleyecek
-                }
-            else:
-                 return {"status": "error", "reply": "Bu kısıtlamalara uygun bir alternatif bulamadım, biraz daha esnek olabilir miyiz?"}
-                 
-        except Exception as e:
-            print("KNN Hatası:", str(e))
-            return {"status": "error", "reply": "Alternatif yemek ararken matematiksel bir hata oluştu."}
-
-    # ==========================================
-    # 🎯 SENARYO 2: YENİ MENÜ OLUŞTURMA İSTEĞİ
-    # ==========================================
-    elif intent == "yeni_menu_olustur":
-        from services import kullanici_kontrol_et, haftalik_diyet_olustur, aktif_menuyu_kaydet
-        
-        profil_kisitlari = profil_kisitlarini_cikar(profile)
-        kullanici = {"kayitli_mi": True, "hedef_kalori": profil_kisitlari.get("hedef_kalori", 2000)}
-
-        if not profil_kisitlari:
-            kullanici = kullanici_kontrol_et(user_email)
-
-        if not kullanici.get("kayitli_mi"):
-            return {"status": "error", "reply": "Lütfen önce profil bilgilerini doldur, ardından sana özel bir menü oluşturabilirim."}
-        
-        hedef_kalori = kullanici.get("hedef_kalori", 2000)
-        alerjiler = list(dict.fromkeys((profil_kisitlari.get("alerjiler") or []) + (llm_karari.get("allergens", []) or [])))
-        sevilmeyenler = list(dict.fromkeys((profil_kisitlari.get("sevilmeyenler") or []) + (llm_karari.get("exclude_foods", []) or [])))
-        sevilenler = list(dict.fromkeys((profil_kisitlari.get("sevilenler") or []) + (llm_karari.get("include_foods", []) or [])))
-        diyet_turu = llm_karari.get("diet_type") or profil_kisitlari.get("diyet_turu") or "Standart"
-        if not diyet_turu:
-             diyet_turu = "Standart"
-        saglik_sorunlari = list(dict.fromkeys((profil_kisitlari.get("saglik_sorunlari") or []) + (llm_karari.get("health_conditions", []) or [])))
-        
-        sonuc = haftalik_diyet_olustur(
-            hedef_kalori=hedef_kalori,
-            alerjiler=alerjiler,
-            sevilmeyenler=sevilmeyenler,
-            sevilenler=sevilenler,
-            saglik_sorunlari=saglik_sorunlari,
-            diyet_turu=diyet_turu
+        return guvenli_response(
+            f"{hedef_gun} günü {hedef_ogun} öğününü değiştiremedim. Kısıtlarını biraz esnetebilir misin?",
+            None,
         )
-        
-        if sonuc.get("durum") == "Başarılı":
-            aktif_menuyu_kaydet(user_email, sonuc)
-            return {
-                "status": "success",
-                "action": "menu_created",
-                "action_taken": "yeni_menu_olusturuldu",
-                "reply": "Harika! Profiline ve kısıtlamalarına uygun 7 günlük menünü başarıyla oluşturdum. Menü sekmesinden veya ekrandan inceleyebilirsin.",
-                "ai_data": llm_karari,
-                "menuData": sonuc,
-                "yeni_menu_verisi": sonuc
-            }
-        else:
-            return {"status": "error", "reply": "Bu kısıtlamalara uygun tam bir menü oluşturamadım, biraz daha esnek olabilir miyiz?"}
 
-    # ==========================================
-    # 🎯 SENARYO 3: ALAKASIZ SORU / GÜVENLİK DUVARI
-    # ==========================================
-    elif intent == "bilgi_ver":
-        from services import genel_bilgi_sorusunu_cevapla, sohbeti_kaydet
-        
-        # Kullanıcının sorusunu doğrudan Llama-3'e normal bir sohbet gibi soruyoruz
-        llm_cevabi = genel_bilgi_sorusunu_cevapla(user_message, profile)
-        
-        # Sohbet geçmişini kaydet
-        sohbeti_kaydet(user_email, user_message, llm_cevabi)
-        
-        return {
-            "status": "success",
-            "action_taken": "bilgi_verildi",
-            "reply": llm_cevabi
-        }
-    # ==========================================
-    # 🎯 DİĞER DURUMLAR (Fallback)
-    # ==========================================
-    else:
-        return {
-            "status": "success",
-            "reply": "Menün üzerinde çalışmaya devam ediyorum. Bugün su içmeyi unutma!"
-        }
+    # D. SADECE GÜN VAR → o günü tamamen yenile
+    if hedef_gun:
+        basarili = _tek_gun_menu_uret(user_email, profile, hedef_gun)
+        if basarili:
+            return guvenli_response(
+                f"{hedef_gun} gününün tüm menüsünü baştan aşağı yeniledim. Listeden kontrol edebilirsin! ✅",
+                "menu_updated",
+            )
+        return guvenli_response(
+            f"{hedef_gun} günkü menüyü yenilemedim. Kısıtlarını biraz esnetebilir misin?",
+            None,
+        )
+
+    # E. GENEL DEĞİŞİM (gün/öğün yok ama değiştirme niyeti var)
+    basarili = _profil_ile_haftalik_menu_uret(user_email, profile, {"intent": "yeni_menu_olustur", "operation": "generate"})
+    if basarili:
+        return guvenli_response("Harika! 7 günlük tüm menünü yepyeni tariflerle baştan oluşturdum. 🥗", "menu_created")
+    return guvenli_response("Bu kısıtlamalarla menüyü yenileyemedim. Kısıtlarını biraz azaltabilir miyiz?", None)
+
+
+# ──────────────────────────────────────────────
+# 5. AŞAMA 2 — LLM FALLBACK (SADECE BİLGİ SORULARI)
+# ──────────────────────────────────────────────
+
+def llm_fallback_cevabi(user_message: str, user_email: str, profile: dict | None) -> dict:
+    """
+    LLM'e yalnızca genel beslenme soruları gönderilir.
+    LLM çıktısı string'e zorlanır; menü JSON'u sızarsa temizlenir.
+    """
+    try:
+        parsed = parse_user_intent(user_message, profile)
+    except Exception as exc:
+        print(f"[LLM intent parser hatası]: {exc}")
+        return guvenli_response("Bunu tam anlayamadım, mevcut menünü baştan oluşturmamı ister misin?", None)
+
+    if not isinstance(parsed, dict) or menu_json_sizintisi_mi(parsed):
+        return guvenli_response("Bunu tam anlayamadım, mevcut menünü baştan oluşturmamı ister misin?", None)
+
+    intent     = parsed.get("intent")
+    confidence = parsed.get("confidence", 0)
+
+    # Güven eşiği düşükse genel yanıt
+    if isinstance(confidence, (int, float)) and confidence < 0.55:
+        return guvenli_response("Bunu tam anlayamadım, mevcut menünü baştan oluşturmamı ister misin?", None)
+
+    # LLM yine de menü oluşturma intent'i döndürdüyse kural motoruna yönlendir
+    if intent == "yeni_menu_olustur":
+        basarili = _profil_ile_haftalik_menu_uret(user_email, profile, parsed)
+        if basarili:
+            return guvenli_response("Yeni menünü profil ayarlarına göre başarıyla oluşturdum!", "menu_created")
+        return guvenli_response("Bu kısıtlamalarla yeni menü oluşturamadım. Kısıtları biraz azaltabilir miyiz?", None)
+
+    if intent in ("gun_degistir", "ogun_degistir", "menuyu_guncelle"):
+        hedef_gun  = parsed.get("hedef_gun")
+        hedef_ogun = parsed.get("hedef_ogun")
+        if hedef_gun and hedef_ogun:
+            basarili = _tek_ogun_uret(user_email, profile, hedef_gun, hedef_ogun)
+            msg = f"{hedef_gun} günü {hedef_ogun} yemeğini yeniden düzenledim. Afiyet olsun! 🍽️"
+        elif hedef_gun:
+            basarili = _tek_gun_menu_uret(user_email, profile, hedef_gun)
+            msg = f"{hedef_gun} gününün tüm menüsünü yeniledim. Listeden kontrol edebilirsin! ✅"
+        else:
+            basarili = _profil_ile_haftalik_menu_uret(user_email, profile, parsed)
+            msg = "İstediğin değişikliği menüne yaptım. Afiyet olsun! 🥗"
+
+        if basarili:
+            return guvenli_response(msg, "menu_updated")
+        return guvenli_response("Bu değişiklikle menüyü güncelleyemedim. Kısıtları biraz azaltabilir miyiz?", None)
+
+    # GENEL BİLGİ SORUSU — sadece metin yanıtı
+    if intent == "bilgi_ver":
+        try:
+            from services import genel_bilgi_sorusunu_cevapla, sohbeti_kaydet
+            llm_cevabi = genel_bilgi_sorusunu_cevapla(user_message, profile)
+            if not isinstance(llm_cevabi, str) or menu_json_sizintisi_mi(llm_cevabi):
+                return guvenli_response("Bunu tam anlayamadım, mevcut menünü baştan oluşturmamı ister misin?", None)
+            sohbeti_kaydet(user_email, user_message, llm_cevabi)
+            return guvenli_response(llm_cevabi, None)
+        except Exception as exc:
+            print(f"[LLM bilgi hatası]: {exc}")
+
+    return guvenli_response("Bunu tam anlayamadım, mevcut menünü baştan oluşturmamı ister misin?", None)
+
+
+# ──────────────────────────────────────────────
+# 6. ANA CHAT ENDPOİNT (main.py tarafından çağrılır)
+# ──────────────────────────────────────────────
+
+def chat_endpoint_islemi(user_message: str, user_email: str, profile: dict | None = None) -> dict:
+    """
+    3 Aşamalı Hibrit NLP:
+      1. Kural tabanlı Python tespiti (deterministik, LLM yok)
+      2. LLM intent parsing (yalnızca genel sorular)
+      3. Güvenli fallback
+    """
+    # AŞAMA 1: Kural tabanlı
+    kural_sonucu = kural_tabanli_intent_isle(user_message, user_email, profile)
+    if kural_sonucu is not None:
+        return kural_sonucu
+
+    # AŞAMA 2: LLM fallback (yalnızca bilgi soruları için)
+    return llm_fallback_cevabi(user_message, user_email, profile)

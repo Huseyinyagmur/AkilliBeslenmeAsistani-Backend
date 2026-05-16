@@ -653,6 +653,7 @@ def haftalik_diyet_olustur(hedef_kalori: int, alerjiler: list = None, sevilmeyen
             "yag": float(row[yag_col]),
             "malzemeler": str(deger(row, malzeme_col, "")),
             "sevilen_odul": float(row["sevilen_odul"]),
+            "rastgele_odul": random.uniform(0, 1),
         })
 
     kahvalti_kat = ["kahvalti_ana", "kahvalti_yan", "peynir", "hamur_isi"]
@@ -699,7 +700,7 @@ def haftalik_diyet_olustur(hedef_kalori: int, alerjiler: list = None, sevilmeyen
         return basarisiz_cevap
 
     prob += pulp.lpSum(
-        x[key] * (yemek_by_id[key[2]]["sevilen_odul"] - 0.01)
+        x[key] * (yemek_by_id[key[2]]["sevilen_odul"] + yemek_by_id[key[2]]["rastgele_odul"] - 0.01)
         for key in x
     )
 

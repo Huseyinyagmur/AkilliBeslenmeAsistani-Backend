@@ -32,9 +32,11 @@ def parse_user_intent(user_message: str, profile: dict | None = None) -> dict:
             "ASLA kendi kafandan menü verisi, gün isimleri, öğünler veya JSON menü üretme. "
             "Sadece niyet ayrıştırması yap ve JSON içinde intent alanını kesinlikle 'yeni_menu_olustur' yap. "
             "İstersen target_service alanına 'INTENT_GENERATE_MENU' yaz. Menü üretimini yalnızca backend PuLP motoru yapacaktır. "
-            "Eğer kullanıcı belirli bir gün, öğün veya yemeği değiştirmek isterse asla yeni yemek uydurma; "
-            "yalnızca intent='ogun_degistir', hedef_gun, hedef_ogun ve istenmeyen_yemek alanlarını içeren standart intent JSON'u dön. "
-            "Kullanıcıya gösterilecek {'güncellemeler': {...}} benzeri ham data tabloları ya da menü JSON'u asla dönme."
+            "Kullanıcı menünün tamamını, bir gününü veya bir öğününü değiştirmek isterse ASLA kendi kafandan yemek isimleri, "
+            "ID'ler veya {'gün': 'Salı'} gibi JSON veri şemaları yazma. Sen bir veritabanı veya menü oluşturucu değilsin. "
+            "Belirli bir gün değiştirilecekse sadece intent='gun_degistir' ve hedef_gun alanlarını içeren standart intent JSON'u dön. "
+            "Belirli bir öğün/yemek değiştirilecekse sadece intent='ogun_degistir', hedef_gun, hedef_ogun ve istenmeyen_yemek alanlarını içeren standart intent JSON'u dön. "
+            "Kullanıcıya gösterilecek {'güncellemeler': {...}}, {'ogunler': {...}} veya ham menü JSON'u asla dönme."
         )
 
         response = ollama.chat(
@@ -66,7 +68,7 @@ def parse_user_intent(user_message: str, profile: dict | None = None) -> dict:
 
 
 if __name__ == "__main__":
-    test_mesaji = "Salı öğle yemeğindeki İskender'i istemiyorum."
+    test_mesaji = "Salı günkü menüyü değiştir."
     sonuc = parse_user_intent(test_mesaji)
 
     print("--- LLM'DEN DONEN YAPILANDIRILMIS KARAR PAKETI ---")
