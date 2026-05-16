@@ -525,6 +525,9 @@ def haftalik_diyet_olustur(hedef_kalori: int, alerjiler: list = None, sevilmeyen
         else:
             hedef_kalori = int(tdee)
 
+    if hedef_kalori < 1200:
+        hedef_kalori = 1200
+
     alerjiler = [norm(a) for a in (alerjiler or []) if str(a).strip()]
     sevilmeyenler = [norm(s) for s in (sevilmeyenler or []) if str(s).strip()]
     sevilenler = [norm(s) for s in (sevilenler or []) if str(s).strip()]
@@ -532,8 +535,8 @@ def haftalik_diyet_olustur(hedef_kalori: int, alerjiler: list = None, sevilmeyen
         "balik": ["balik", "somon", "hamsi", "ton baligi", "levrek", "cipura", "uskumru", "deniz urunleri"],
         "deniz urunleri": ["deniz urunleri", "balik", "somon", "hamsi", "karides", "midye", "kalamar"],
         "tavuk": ["tavuk", "pilic", "hindi"],
-        "et": ["et", "kirmizi et", "kebap", "sarkuteri", "sakatat", "kiyma", "kavurma", "sucuk", "sosis", "pastirma", "ciger", "doner", "dana", "kuzu"],
-        "kirmizi et": ["et", "kirmizi et", "kebap", "sarkuteri", "sakatat", "kiyma", "kavurma", "sucuk", "sosis", "pastirma", "ciger", "doner", "dana", "kuzu"],
+        "et": ["et", "kirmizi et", "kebap", "sarkuteri", "sakatat", "kiyma", "kavurma", "sucuk", "sosis", "pastirma", "ciger", "doner", "dana", "kuzu", "burger", "hamburger", "cheeseburger", "kofte", "tantuni", "lahmacun", "manti"],
+        "kirmizi et": ["et", "kirmizi et", "kebap", "sarkuteri", "sakatat", "kiyma", "kavurma", "sucuk", "sosis", "pastirma", "ciger", "doner", "dana", "kuzu", "burger", "hamburger", "cheeseburger", "kofte", "tantuni", "lahmacun", "manti"],
         "sakatat": ["sakatat", "iskembe", "kelle", "paca", "ciger", "yurek", "dil", "kokorec"],
     }
     genisletilmis_sevilmeyenler = []
@@ -609,6 +612,9 @@ def haftalik_diyet_olustur(hedef_kalori: int, alerjiler: list = None, sevilmeyen
             | df["ozel_kategori_norm"].str.contains("tatli", regex=False, na=False)
             | df["ozel_kategori"].isin(["snack_tatli"])
         )
+        diyabet_gizli_seker_kelimeleri = ["recel", "pekmez", "bal", "cikolata", "sprite", "kola", "gazoz", "meyve suyu", "surup", "nektar", "nektari", "hazir", "kizartma", "kizartmasi"]
+        for kelime in diyabet_gizli_seker_kelimeleri:
+            diyabet_tatli = diyabet_tatli | df["isim_norm"].str.contains(kelime, regex=False, na=False)
         df = df[~diyabet_tatli].copy()
 
     if goal == "kilo_verme" or (hedef_kalori is not None and hedef_kalori < 2200):
@@ -813,6 +819,8 @@ def bmr_ve_kalori_hesapla(cinsiyet: str, yas: int, boy_cm: float, kilo_kg: float
     if hedef == "Kilo Ver": hedef_kalori = gunluk_harcanan_kalori - 500
     elif hedef == "Kas Yap": hedef_kalori = gunluk_harcanan_kalori + 300
     else: hedef_kalori = gunluk_harcanan_kalori
+    if hedef_kalori < 1200:
+        hedef_kalori = 1200
     return int(hedef_kalori)
 
 def kullanici_kaydet(email: str, ad: str, cinsiyet: str, yas: int, boy_cm: float, kilo_kg: float, hareket_katsayisi: float, hedef: str):
@@ -1027,10 +1035,22 @@ def kullanici_kontrol_et(email: str):
             print(f"Kullanici kontrol hatası: {e}")
             return {"kayitli_mi": False, "durum": "hata", "mesaj": str(e)}
 
-def genel_bilgi_sorusunu_cevapla(user_message: str) -> str:
+def genel_bilgi_sorusunu_cevapla(user_message: str, profile: dict | None = None) -> str:
     import ollama
+    import json
     
     system_prompt = "Sen NexText'in profesyonel, samimi ve motive edici diyetisyen asistanısın. Kullanıcının beslenme, diyet veya sağlıklı yaşam ile ilgili sorusuna kısa, öz (maksimum 3-4 cümle) ve bilimsel olarak doğru bir cevap ver. JSON üretme, normal metin olarak konuş. KESİNLİKLE VE SADECE TÜRKÇE DİLİNDE CEVAP VER. İNGİLİZCE VEYA BAŞKA BİR DİL KULLANMA."
+    if profile:
+        profile_text = json.dumps(profile, ensure_ascii=False, indent=2)
+        system_prompt += (
+            "\n\nSen uzman bir diyetisyensin. Karşındaki kullanıcının güncel profil bilgileri şunlardır: "
+            f"{profile_text}\n"
+            "Kullanıcı sana bir şey sorduğunda veya menü oluşturmanı istediğinde ASLA profil bilgilerini tekrar sorma, "
+            "çünkü bu bilgiler zaten sistemde kayıtlı. Doğrudan bu profil verilerine ve kısıtlamalara uygun, "
+            "empatik ve profesyonel cevaplar ver."
+        )
+    else:
+        system_prompt += "\n\nBu istekte profil verisi yoksa, yalnızca kişiselleştirme için gerçekten gerekliyse profili doldurmasını isteyebilirsin."
     
     try:
         response = ollama.chat(

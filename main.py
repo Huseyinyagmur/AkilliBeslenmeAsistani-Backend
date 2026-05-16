@@ -2,7 +2,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import create_engine, text
 from pydantic import BaseModel
-from typing import List
+from typing import Any, Dict, List, Optional
 from services import diyet_olustur, kullanici_kaydet, alternatif_yemek_bul_ml, kullanici_kontrol_et
 import urllib
 
@@ -199,12 +199,13 @@ def update_weight(istek: KiloGuncelleIstegi):
 class ChatRequest(BaseModel):
     user_message: str
     user_email: str
+    profile: Optional[Dict[str, Any]] = None
 
 @app.post("/api/chat")
 async def chat_with_assistant(request: ChatRequest):
     from api_controller import chat_endpoint_islemi
     try:
-        response = chat_endpoint_islemi(request.user_message, request.user_email)
+        response = chat_endpoint_islemi(request.user_message, request.user_email, request.profile)
         return response
     except Exception as e:
         print(f"Chatbot Hatası: {str(e)}")

@@ -2,15 +2,72 @@ from nlp_parser import parse_user_intent
 from services import alternatif_yemek_bul_ml, diyet_olustur, aktif_menuyu_getir
 import json
 
-def chat_endpoint_islemi(user_message: str, user_email: str):
-    llm_karari = parse_user_intent(user_message)
+def metni_normalize_et(metin: str) -> str:
+    return (
+        str(metin or "")
+        .lower()
+        .replace("ı", "i").replace("ö", "o").replace("ü", "u").replace("ç", "c").replace("ş", "s").replace("ğ", "g")
+        .replace("İ", "i").replace("Ö", "o").replace("Ü", "u").replace("Ç", "c").replace("Ş", "s").replace("Ğ", "g")
+        .replace("�", "i").replace("i̇", "i")
+    )
+
+def menu_olusturma_istegi_mi(user_message: str) -> bool:
+    metin = metni_normalize_et(user_message)
+    guncelleme_kelimeleri = ["degistir", "cikar", "çıkar", "sevmedim", "istemiyorum", "yerine", "alternatif"]
+    if any(kelime in metin for kelime in guncelleme_kelimeleri):
+        return False
+
+    menu_kelimeleri = [
+        "menu olustur", "menu hazirla", "menu yap", "menü oluştur", "menü hazırla",
+        "diyet listesi", "liste yap", "beslenme plani", "beslenme planı",
+        "haftalik menu", "haftalik liste", "7 gunluk menu", "7 gunluk liste"
+    ]
+    return any(kelime in metin for kelime in menu_kelimeleri)
+
+def profil_var_mi(profile: dict | None) -> bool:
+    return isinstance(profile, dict) and bool(profile)
+
+def profil_kisitlarini_cikar(profile: dict | None) -> dict:
+    if not profil_var_mi(profile):
+        return {}
+
+    secimler = profile.get("secimler") or {}
+    fiziksel = profile.get("kullaniciFiziksel") or {}
+
+    return {
+        "hedef_kalori": profile.get("yapayZekaHedefKalori") or fiziksel.get("hedef_kalori") or 2000,
+        "alerjiler": secimler.get("allergies") or secimler.get("alerjiler") or [],
+        "sevilmeyenler": secimler.get("dislikedFoods") or secimler.get("sevilmeyenler") or [],
+        "sevilenler": secimler.get("likedFoods") or secimler.get("sevilenler") or [],
+        "saglik_sorunlari": secimler.get("healthIssues") or secimler.get("saglik_sorunlari") or [],
+        "diyet_turu": secimler.get("dietType") or secimler.get("diyet_turu") or "Standart",
+    }
+
+def chat_endpoint_islemi(user_message: str, user_email: str, profile: dict | None = None):
+    if menu_olusturma_istegi_mi(user_message):
+        llm_karari = {
+            "intent": "yeni_menu_olustur",
+            "confidence": 1.0,
+            "target_service": "INTENT_GENERATE_MENU",
+            "operation": "generate",
+            "allergens": [],
+            "exclude_foods": [],
+            "include_foods": [],
+            "health_conditions": [],
+            "diet_type": None,
+        }
+    else:
+        llm_karari = parse_user_intent(user_message, profile)
     
     # Llama-3'ün ürettiği ham JSON'ı terminale yazdıralım:
     print("--- LLM KARARI ---")
     print(llm_karari)
     
     intent = llm_karari.get("intent")
+    target_service = llm_karari.get("target_service")
     confidence = llm_karari.get("confidence", 0)
+    if target_service == "INTENT_GENERATE_MENU":
+        intent = "yeni_menu_olustur"
     
     # Güvenlik Ağı: Model emin değilse saçmalamasını engelle
     if confidence < 0.6:
@@ -105,18 +162,23 @@ def chat_endpoint_islemi(user_message: str, user_email: str):
     elif intent == "yeni_menu_olustur":
         from services import kullanici_kontrol_et, haftalik_diyet_olustur, aktif_menuyu_kaydet
         
-        kullanici = kullanici_kontrol_et(user_email)
+        profil_kisitlari = profil_kisitlarini_cikar(profile)
+        kullanici = {"kayitli_mi": True, "hedef_kalori": profil_kisitlari.get("hedef_kalori", 2000)}
+
+        if not profil_kisitlari:
+            kullanici = kullanici_kontrol_et(user_email)
+
         if not kullanici.get("kayitli_mi"):
             return {"status": "error", "reply": "Lütfen önce profil bilgilerini doldur, ardından sana özel bir menü oluşturabilirim."}
         
         hedef_kalori = kullanici.get("hedef_kalori", 2000)
-        alerjiler = llm_karari.get("allergens", [])
-        sevilmeyenler = llm_karari.get("exclude_foods", [])
-        sevilenler = llm_karari.get("include_foods", [])
-        diyet_turu = llm_karari.get("diet_type", "Standart")
+        alerjiler = list(dict.fromkeys((profil_kisitlari.get("alerjiler") or []) + (llm_karari.get("allergens", []) or [])))
+        sevilmeyenler = list(dict.fromkeys((profil_kisitlari.get("sevilmeyenler") or []) + (llm_karari.get("exclude_foods", []) or [])))
+        sevilenler = list(dict.fromkeys((profil_kisitlari.get("sevilenler") or []) + (llm_karari.get("include_foods", []) or [])))
+        diyet_turu = llm_karari.get("diet_type") or profil_kisitlari.get("diyet_turu") or "Standart"
         if not diyet_turu:
              diyet_turu = "Standart"
-        saglik_sorunlari = llm_karari.get("health_conditions", [])
+        saglik_sorunlari = list(dict.fromkeys((profil_kisitlari.get("saglik_sorunlari") or []) + (llm_karari.get("health_conditions", []) or [])))
         
         sonuc = haftalik_diyet_olustur(
             hedef_kalori=hedef_kalori,
@@ -131,9 +193,11 @@ def chat_endpoint_islemi(user_message: str, user_email: str):
             aktif_menuyu_kaydet(user_email, sonuc)
             return {
                 "status": "success",
+                "action": "menu_created",
                 "action_taken": "yeni_menu_olusturuldu",
-                "reply": "Harika! Belirttiğin özelliklere ve hedeflerine uygun, tamamen sana özel yepyeni bir haftalık menü hazırladım.",
+                "reply": "Harika! Profiline ve kısıtlamalarına uygun 7 günlük menünü başarıyla oluşturdum. Menü sekmesinden veya ekrandan inceleyebilirsin.",
                 "ai_data": llm_karari,
+                "menuData": sonuc,
                 "yeni_menu_verisi": sonuc
             }
         else:
@@ -146,7 +210,7 @@ def chat_endpoint_islemi(user_message: str, user_email: str):
         from services import genel_bilgi_sorusunu_cevapla, sohbeti_kaydet
         
         # Kullanıcının sorusunu doğrudan Llama-3'e normal bir sohbet gibi soruyoruz
-        llm_cevabi = genel_bilgi_sorusunu_cevapla(user_message)
+        llm_cevabi = genel_bilgi_sorusunu_cevapla(user_message, profile)
         
         # Sohbet geçmişini kaydet
         sohbeti_kaydet(user_email, user_message, llm_cevabi)
