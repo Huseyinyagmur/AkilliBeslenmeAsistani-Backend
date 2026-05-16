@@ -421,7 +421,7 @@ def haftalik_diyet_olustur(hedef_kalori: int, alerjiler: list = None, sevilmeyen
 def haftalik_diyet_olustur(hedef_kalori: int, alerjiler: list = None, sevilmeyenler: list = None, saglik_sorunlari: list = None, diyet_turu: str = "Standart", sevilenler: list = None, ai_data: dict = None):
     basarisiz_cevap = {
         "durum": "Başarısız",
-        "mesaj": "Mevcut veri havuzu ile belirttiğiniz sağlık koşulları, alerjiler ve dışlanan yiyecekler birleştirildiğinde haftalık menü oluşturulamadı. Lütfen kısıtlamalarınızı azaltın."
+        "mesaj": "Mevcut veri havuzu ile belirttiğiniz sağlık koşulları ve alerjiler birleştirildiğinde haftalık menü oluşturulamadı. Lütfen kısıtlamalarınızı azaltın."
     }
 
     gunler = ["Pazartesi", "Salı", "Çarşamba", "Perşembe", "Cuma", "Cumartesi", "Pazar"]
@@ -528,6 +528,18 @@ def haftalik_diyet_olustur(hedef_kalori: int, alerjiler: list = None, sevilmeyen
     alerjiler = [norm(a) for a in (alerjiler or []) if str(a).strip()]
     sevilmeyenler = [norm(s) for s in (sevilmeyenler or []) if str(s).strip()]
     sevilenler = [norm(s) for s in (sevilenler or []) if str(s).strip()]
+    exclude_es_anlamlilar = {
+        "balik": ["balik", "somon", "hamsi", "ton baligi", "levrek", "cipura", "uskumru", "deniz urunleri"],
+        "deniz urunleri": ["deniz urunleri", "balik", "somon", "hamsi", "karides", "midye", "kalamar"],
+        "tavuk": ["tavuk", "pilic", "hindi"],
+        "et": ["et", "kirmizi et", "kebap", "sarkuteri", "sakatat", "kiyma", "kavurma", "sucuk", "sosis", "pastirma", "ciger", "doner", "dana", "kuzu"],
+        "kirmizi et": ["et", "kirmizi et", "kebap", "sarkuteri", "sakatat", "kiyma", "kavurma", "sucuk", "sosis", "pastirma", "ciger", "doner", "dana", "kuzu"],
+        "sakatat": ["sakatat", "iskembe", "kelle", "paca", "ciger", "yurek", "dil", "kokorec"],
+    }
+    genisletilmis_sevilmeyenler = []
+    for kelime in sevilmeyenler:
+        genisletilmis_sevilmeyenler.extend(exclude_es_anlamlilar.get(kelime, [kelime]))
+    sevilmeyenler = list(dict.fromkeys(genisletilmis_sevilmeyenler))
     saglik_sorunlari = list(saglik_sorunlari or [])
     if ai_data and ai_data.get("health_conditions"):
         saglik_sorunlari.extend(ai_data.get("health_conditions"))
@@ -569,6 +581,7 @@ def haftalik_diyet_olustur(hedef_kalori: int, alerjiler: list = None, sevilmeyen
     df["alerjen_norm"] = df[alerjen_col].fillna("").map(norm)
     df["diyet_norm"] = df[diyet_col].fillna("").map(norm)
     df["ozel_kategori"] = df.apply(lambda row: ozel_kategori_bul(row[kategori_col], row[isim_col]), axis=1)
+    df["ozel_kategori_norm"] = df["ozel_kategori"].map(norm)
 
     if norm(diyet_turu) == "vegan":
         df = df[df["diyet_norm"] == "vegan"].copy()
@@ -581,8 +594,22 @@ def haftalik_diyet_olustur(hedef_kalori: int, alerjiler: list = None, sevilmeyen
         for kelime in hard_drop_kelimeleri:
             maske = maske | df["isim_norm"].str.contains(kelime, regex=False, na=False)
             maske = maske | df["malzeme_norm"].str.contains(kelime, regex=False, na=False)
+            maske = maske | df["kategori_norm"].str.contains(kelime, regex=False, na=False)
+            maske = maske | df["ozel_kategori_norm"].str.contains(kelime, regex=False, na=False)
             maske = maske | df["alerjen_norm"].str.contains(kelime, regex=False, na=False)
         df = df[~maske].copy()
+
+    if goal == "kilo_verme":
+        agir_ana_yemek = (df["ozel_kategori"] == "ana_yemek") & (df[kalori_col] > 550)
+        df = df[~agir_ana_yemek].copy()
+
+    if diyabet_var_mi:
+        diyabet_tatli = (
+            df["kategori_norm"].str.contains("tatli", regex=False, na=False)
+            | df["ozel_kategori_norm"].str.contains("tatli", regex=False, na=False)
+            | df["ozel_kategori"].isin(["snack_tatli"])
+        )
+        df = df[~diyabet_tatli].copy()
 
     if goal == "kilo_verme" or (hedef_kalori is not None and hedef_kalori < 2200):
         zararli = (
@@ -679,17 +706,45 @@ def haftalik_diyet_olustur(hedef_kalori: int, alerjiler: list = None, sevilmeyen
         prob += pulp.lpSum(kahvalti_vars) >= 2
         prob += pulp.lpSum(kahvalti_vars) <= 4
 
-        kahvalti_ana_vars = [
+        kahvalti_agir_vars = [
             var for (g, slot, yid), var in x.items()
-            if g == gun and slot == "kahvalti" and yemek_by_id[yid]["ozel_kategori"] == "kahvalti_ana"
+            if g == gun and slot == "kahvalti" and yemek_by_id[yid]["ozel_kategori"] in ["kahvalti_ana", "hamur_isi"]
         ]
-        prob += pulp.lpSum(kahvalti_ana_vars) <= 1
+        prob += pulp.lpSum(kahvalti_agir_vars) <= 1
+
+        kahvalti_tatli_surulebilir_vars = [
+            var for (g, slot, yid), var in x.items()
+            if g == gun
+            and slot == "kahvalti"
+            and any(
+                kelime in norm(
+                    f"{yemek_by_id[yid]['isim']} {yemek_by_id[yid]['malzemeler']} {yemek_by_id[yid]['kategori']}"
+                )
+                for kelime in ["recel", "bal", "pekmez", "krem cikolata", "cikolata krem", "nutella", "fistik ezmesi"]
+            )
+        ]
+        prob += pulp.lpSum(kahvalti_tatli_surulebilir_vars) <= 1
+
+        kahvalti_doyurucu_vars = [
+            var for (g, slot, yid), var in x.items()
+            if g == gun
+            and slot == "kahvalti"
+            and (
+                yemek_by_id[yid]["ozel_kategori"] == "peynir"
+                or any(
+                    kelime in norm(
+                        f"{yemek_by_id[yid]['isim']} {yemek_by_id[yid]['malzemeler']} {yemek_by_id[yid]['kategori']}"
+                    )
+                    for kelime in ["yumurta", "zeytin", "ekmek", "tost", "bazlama"]
+                )
+            )
+        ]
+        prob += pulp.lpSum(kahvalti_doyurucu_vars) + pulp.lpSum(kahvalti_agir_vars) >= 1
 
         prob += pulp.lpSum(var for (g, slot, _), var in x.items() if g == gun and slot == "ogle_ana") == 1
         prob += pulp.lpSum(var for (g, slot, _), var in x.items() if g == gun and slot == "ogle_yan") == 1
         prob += pulp.lpSum(var for (g, slot, _), var in x.items() if g == gun and slot == "aksam_ana") == 1
-        prob += pulp.lpSum(var for (g, slot, _), var in x.items() if g == gun and slot == "aksam_yan") >= 1
-        prob += pulp.lpSum(var for (g, slot, _), var in x.items() if g == gun and slot == "aksam_yan") <= 2
+        prob += pulp.lpSum(var for (g, slot, _), var in x.items() if g == gun and slot == "aksam_yan") == 2
         prob += pulp.lpSum(var for (g, slot, _), var in x.items() if g == gun and slot == "ara") >= 1
         prob += pulp.lpSum(var for (g, slot, _), var in x.items() if g == gun and slot == "ara") <= 2
 
@@ -711,12 +766,9 @@ def haftalik_diyet_olustur(hedef_kalori: int, alerjiler: list = None, sevilmeyen
         ) <= 2
 
     for yemek in yemekler:
-        ana_tekrar = [
-            var for (_, slot, yid), var in x.items()
-            if yid == yemek["id"] and slot in ["ogle_ana", "aksam_ana"]
-        ]
-        if ana_tekrar:
-            prob += pulp.lpSum(ana_tekrar) <= 2
+        haftalik_tekrar = [var for (_, _, yid), var in x.items() if yid == yemek["id"]]
+        if haftalik_tekrar:
+            prob += pulp.lpSum(haftalik_tekrar) <= 2
 
     prob.solve(pulp.PULP_CBC_CMD(msg=False))
     if pulp.LpStatus[prob.status] != "Optimal":
