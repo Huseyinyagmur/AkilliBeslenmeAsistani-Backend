@@ -136,28 +136,11 @@ def alternatif_bul(istek: AlternatifIstegi):
         eski_yemek_id=istek.eski_yemek_id,
         kategori=istek.eski_yemek_kategorisi,
         alerjiler=istek.alerjiler,
-        sevilmeyenler=istek.sevilmeyenler
-    )
-    return sonuc
-# 🌟 YENİ: Alternatif Bul Endpoint'i (Şimdilik taslak)
-@app.post("/api/alternatif-bul")
-def alternatif_yemek_bul_api(istek: AlternatifIstegi):
-    sonuc = alternatif_yemek_bul(
-        eski_yemek_id=istek.eski_yemek_id,
-        kategori=istek.eski_yemek_kategorisi,
-        eski_kalori=istek.eski_yemek_kalorisi,
-        alerjiler=istek.alerjiler,
         sevilmeyenler=istek.sevilmeyenler,
-        sevilenler=istek.sevilenler,
         saglik_sorunlari=istek.saglik_sorunlari,
         diyet_turu=istek.diyet_turu
     )
-    
-    if sonuc["durum"] == "Başarılı":
-        return sonuc
-    else:
-        raise HTTPException(status_code=404, detail=sonuc["mesaj"])
-
+    return sonuc
 @app.post("/api/kullanici-olustur")
 def yeni_kullanici_olustur(kullanici: KullaniciBilgileri):
     try:
@@ -224,6 +207,18 @@ class ProfilGuncelleIstegi(BaseModel):
     sevilenler: List[str] = []
     saglik_sorunlari: List[str] = []
 
+def hedefi_normalize_et(hedef: Optional[str]) -> str:
+    hedef_norm = (
+        str(hedef or "koruma").lower().strip()
+        .replace("ı", "i").replace("ö", "o").replace("ü", "u")
+        .replace("ç", "c").replace("ş", "s").replace("ğ", "g")
+    )
+    if "ver" in hedef_norm or "lose" in hedef_norm:
+        return "kilo_verme"
+    if "al" in hedef_norm or "kas" in hedef_norm or "gain" in hedef_norm:
+        return "kilo_alma"
+    return "koruma"
+
 @app.put("/api/profil-guncelle")
 def profil_guncelle(istek: ProfilGuncelleIstegi):
     """
@@ -284,7 +279,7 @@ def profil_guncelle(istek: ProfilGuncelleIstegi):
     # ── ADIM 2: Kullanıcının kalori hedefini bul ─────────────────────────
     hedef_kalori = profil_data["hedef_kalori"]
 
-    goal_normalized = str(istek.goal or "koruma").lower().strip()
+    goal_normalized = hedefi_normalize_et(istek.goal)
 
     # ── ADIM 3: Yeni profil verisiyle haftalık menüyü yeniden üret ───────
     try:
@@ -308,11 +303,30 @@ def profil_guncelle(istek: ProfilGuncelleIstegi):
         )
 
         if menu_sonuc.get("durum") == "Başarılı" and menu_sonuc.get("haftalik_plan"):
-            aktif_menuyu_kaydet(istek.email, menu_sonuc)
+            menu_sonuc["hedef_kalori"] = hedef_kalori
+            menu_sonuc["secimler"] = {
+                "goal": istek.goal,
+                "dietType": istek.dietType or "Standart",
+                "allergies": istek.alerjiler,
+                "dislikedFoods": istek.sevilmeyenler,
+                "likedFoods": istek.sevilenler,
+                "healthIssues": istek.saglik_sorunlari,
+            }
+            kayit_sonucu = aktif_menuyu_kaydet(istek.email, menu_sonuc)
+            if kayit_sonucu.get("durum") != "kaydedildi":
+                return {
+                    "durum": "Başarılı",
+                    "mesaj": "Profil güncellendi.",
+                    "menu_updated": False,
+                    "uyari": kayit_sonucu.get("hata_mesaji") or "Yeni menü oluşturuldu ancak aktif menü olarak kaydedilemedi.",
+                }
             return {
                 "durum": "Başarılı",
                 "mesaj": "Profil güncellendi ve yeni menünüz oluşturuldu.",
                 "menu_updated": True,
+                "hedef_kalori": hedef_kalori,
+                "secimler": menu_sonuc["secimler"],
+                "diyet_plani": menu_sonuc,
             }
         else:
             # Menü oluşturulamadı (Infeasible) — profil kaydedildi ama menü değişmedi

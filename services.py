@@ -26,6 +26,7 @@ BASE_DIR = Path(__file__).resolve().parent
 DATASET_PATH = BASE_DIR / "foods_final_v2_final.xlsx"
 DB_KULLANILABILIR = True
 YEMEK_ADI_KOLONU = "Yemek_Ad\u0131"
+SAKATAT_KELIMELERI = ["sakatat", "iskembe", "işkembe", "kelle", "paca", "paça", "ciger", "ciğer", "yurek", "yürek", "dil", "kokorec", "kokoreç"]
 
 
 class AttrDict(dict):
@@ -72,8 +73,16 @@ def yemekleri_kaynaktan_getir(sorgu, haric_tutulacak_idler):
 
 
 def normalize_tr(metin: str) -> str:
-    if not metin: return ""
-    return str(metin).lower().replace('ı', 'i').replace('ö', 'o').replace('ü', 'u').replace('ç', 'c').replace('ş', 's').replace('ğ', 'g')
+    if not metin:
+        return ""
+    return (
+        str(metin).lower()
+        .replace("ı", "i").replace("ö", "o").replace("ü", "u").replace("ç", "c").replace("ş", "s").replace("ğ", "g")
+        .replace("i̇", "i")
+        .replace("Ä±", "i").replace("Ã¶", "o").replace("Ã¼", "u").replace("Ã§", "c").replace("ÅŸ", "s").replace("ÄŸ", "g")
+        .replace("Ä°", "i").replace("Ã–", "o").replace("Ãœ", "u").replace("Ã‡", "c").replace("Å", "s").replace("Ä", "g")
+        .replace("ï¿½", "i").replace("iÌ‡", "i")
+    )
 
 
 def diyet_olustur(hedef_kalori: int, alerjiler: list = None, sevilmeyenler: list = None, saglik_sorunlari: list = None, diyet_turu: str = "Standart", sevilenler: list = None, haric_tutulacak_idler: list = None, yasakli_kategoriler: list = None, ai_data: dict = None, yasakli_ozel_kategoriler: list = None):
@@ -127,7 +136,7 @@ def diyet_olustur(hedef_kalori: int, alerjiler: list = None, sevilmeyenler: list
         "tavuk": ["tavuk", "pilic", "hindi"],
         "et": ["et", "kirmizi et", "kebap", "sarkuteri", "sakatat", "kiyma", "kavurma", "sucuk", "sosis", "pastirma", "ciger", "doner", "dana", "kuzu", "burger", "hamburger", "cheeseburger", "kofte", "tantuni", "lahmacun", "manti"],
         "kirmizi et": ["et", "kirmizi et", "kebap", "sarkuteri", "sakatat", "kiyma", "kavurma", "sucuk", "sosis", "pastirma", "ciger", "doner", "dana", "kuzu", "burger", "hamburger", "cheeseburger", "kofte", "tantuni", "lahmacun", "manti"],
-        "sakatat": ["sakatat", "iskembe", "kelle", "paca", "ciger", "yurek", "dil", "kokorec"],
+        "sakatat": [normalize_tr(kelime) for kelime in SAKATAT_KELIMELERI],
     }
     genisletilmis_sevilmeyenler = []
     for kelime in sevilmeyenler_norm:
@@ -178,6 +187,10 @@ def diyet_olustur(hedef_kalori: int, alerjiler: list = None, sevilmeyenler: list
             
             # 🛑 2. ALERJİ FİLTRESİ (Genişletilmiş Alt Metin Araması)
             if any(a in isim_norm or a in malz_norm or a in alerjen_norm for a in alerjiler_norm): continue
+            if "sakatat" in sevilmeyenler_norm:
+                sakatat_kelimeleri_norm = [normalize_tr(kelime) for kelime in SAKATAT_KELIMELERI]
+                if any(k in isim_norm or k in malz_norm or k in kat_norm for k in sakatat_kelimeleri_norm):
+                    continue
             
             # 🛑 3. ÖZEL SAKATAT FİLTRESİ
             if "sakatat" in sevilmeyenler:
@@ -862,7 +875,7 @@ def haftalik_diyet_olustur(hedef_kalori: int, alerjiler: list = None, sevilmeyen
         "tavuk": ["tavuk", "pilic", "hindi"],
         "et": ["et", "kirmizi et", "kebap", "sarkuteri", "sakatat", "kiyma", "kavurma", "sucuk", "sosis", "pastirma", "ciger", "doner", "dana", "kuzu", "burger", "hamburger", "cheeseburger", "kofte", "tantuni", "lahmacun", "manti"],
         "kirmizi et": ["et", "kirmizi et", "kebap", "sarkuteri", "sakatat", "kiyma", "kavurma", "sucuk", "sosis", "pastirma", "ciger", "doner", "dana", "kuzu", "burger", "hamburger", "cheeseburger", "kofte", "tantuni", "lahmacun", "manti"],
-        "sakatat": ["sakatat", "iskembe", "kelle", "paca", "ciger", "yurek", "dil", "kokorec"],
+        "sakatat": [norm(kelime) for kelime in SAKATAT_KELIMELERI],
     }
     genisletilmis_sevilmeyenler = []
     for kelime in sevilmeyenler:
@@ -910,6 +923,15 @@ def haftalik_diyet_olustur(hedef_kalori: int, alerjiler: list = None, sevilmeyen
     df["diyet_norm"] = df[diyet_col].fillna("").map(norm)
     df["ozel_kategori"] = df.apply(lambda row: ozel_kategori_bul(row[kategori_col], row[isim_col]), axis=1)
     df["ozel_kategori_norm"] = df["ozel_kategori"].map(norm)
+
+    if "sakatat" in sevilmeyenler:
+        sakatat_kelimeleri_norm = [norm(kelime) for kelime in SAKATAT_KELIMELERI]
+        sakatat_maskesi = pd.Series(False, index=df.index)
+        for kelime in sakatat_kelimeleri_norm:
+            sakatat_maskesi = sakatat_maskesi | df["isim_norm"].str.contains(kelime, regex=False, na=False)
+            sakatat_maskesi = sakatat_maskesi | df["malzeme_norm"].str.contains(kelime, regex=False, na=False)
+            sakatat_maskesi = sakatat_maskesi | df["kategori_norm"].str.contains(kelime, regex=False, na=False)
+        df = df[~sakatat_maskesi].copy()
 
     if norm(diyet_turu) == "vegan":
         df = df[df["diyet_norm"] == "vegan"].copy()
@@ -1598,7 +1620,7 @@ def kilo_guncelle(email: str, yeni_kilo: float):
         
     return {"durum": "Başarılı", "mesaj": "Kilonuz güncellendi", "yeni_hedef_kalori": yeni_hedef_kalori}
 
-def alternatif_yemek_bul_ml(eski_yemek_id: int, kategori: str, alerjiler: list, sevilmeyenler: list, onceki_secilen_yemekler: list = None):
+def alternatif_yemek_bul_ml(eski_yemek_id: int, kategori: str, alerjiler: list, sevilmeyenler: list, onceki_secilen_yemekler: list = None, saglik_sorunlari: list = None, diyet_turu: str = "Standart"):
     with engine.connect() as conn:
         sorgu = text("SELECT * FROM Yemekler WHERE Kategori = :kategori")
         sonuc = conn.execute(sorgu, {"kategori": kategori})
@@ -1610,7 +1632,12 @@ def alternatif_yemek_bul_ml(eski_yemek_id: int, kategori: str, alerjiler: list, 
         sutun_isimleri = sonuc.keys()
         df = pd.DataFrame(yemekler_db, columns=sutun_isimleri)
 
-        yasaklilar = [normalize_tr(yasakli) for yasakli in (alerjiler + sevilmeyenler) if str(yasakli).strip()]
+        yasaklilar = [normalize_tr(yasakli) for yasakli in ((alerjiler or []) + (sevilmeyenler or [])) if str(yasakli).strip()]
+        if "sakatat" in yasaklilar:
+            yasaklilar.extend(normalize_tr(kelime) for kelime in SAKATAT_KELIMELERI)
+        yasaklilar = list(dict.fromkeys(yasaklilar))
+        saglik_norm = [normalize_tr(sorun) for sorun in (saglik_sorunlari or []) if str(sorun).strip()]
+        diyabet_var_mi = any(w in s for s in saglik_norm for w in ["diyabet", "diabetic", "insulin", "insulin direnci"])
         onceki_secilenler = {
             normalize_tr(yemek)
             for yemek in (onceki_secilen_yemekler or [])
@@ -1622,9 +1649,24 @@ def alternatif_yemek_bul_ml(eski_yemek_id: int, kategori: str, alerjiler: list, 
             + df.get('Baskin_Malzemeler', pd.Series("", index=df.index)).fillna("").map(normalize_tr)
             + " "
             + df.get('Alerjen_Bilgisi', pd.Series("", index=df.index)).fillna("").map(normalize_tr)
+            + " "
+            + df.get('Kategori', pd.Series("", index=df.index)).fillna("").map(normalize_tr)
         )
         for yasakli in yasaklilar:
             df = df[~filtre_alani.loc[df.index].str.contains(yasakli, regex=False, na=False)]
+
+        diyet_norm = normalize_tr(diyet_turu or "Standart")
+        if "Diyet_Turu" in df.columns and diyet_norm == "vegan":
+            df = df[df["Diyet_Turu"].fillna("").map(normalize_tr) == "vegan"]
+        elif "Diyet_Turu" in df.columns and diyet_norm == "vejetaryen":
+            df = df[df["Diyet_Turu"].fillna("").map(normalize_tr).isin(["vegan", "vejetaryen"])]
+
+        if diyabet_var_mi:
+            sekerli_kelimeler = ["recel", "pekmez", "bal", "cikolata", "kola", "gazoz", "sprite", "meyve suyu", "surup", "nektar", "milkshake", "enerji icecegi"]
+            sekerli_mask = pd.Series(False, index=df.index)
+            for kelime in sekerli_kelimeler:
+                sekerli_mask = sekerli_mask | filtre_alani.loc[df.index].str.contains(kelime, regex=False, na=False)
+            df = df[~sekerli_mask]
 
         if df.empty:
             return {"durum": "Hata", "mesaj": "Kısıtlamalara uyan alternatif kalmadı."}
@@ -1683,10 +1725,20 @@ def alternatif_yemek_bul_ml(eski_yemek_id: int, kategori: str, alerjiler: list, 
 def aktif_menuyu_kaydet(email: str, diyet_plani: dict):
     import json
     from sqlalchemy import text
+
+    def json_uyumlu_yap(value):
+        if isinstance(value, set):
+            return list(value)
+        if hasattr(value, "item"):
+            try:
+                return value.item()
+            except Exception:
+                pass
+        raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
     
     try:
         # ensure_ascii=False: Türkçe karakterlerin bozulmadan (ç, ş, ğ olarak) veritabanına yazılmasını sağlar!
-        json_verisi = json.dumps(diyet_plani, ensure_ascii=False)
+        json_verisi = json.dumps(diyet_plani, ensure_ascii=False, default=json_uyumlu_yap)
         
         with engine.begin() as conn:
             # 1. Tablo yoksa oluştur
