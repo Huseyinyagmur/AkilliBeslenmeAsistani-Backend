@@ -57,6 +57,9 @@ YENI_MENU_KELIMELERI_CIFT = [
     ("menu", "hazirla"), ("menü", "ver"),
     ("menu", "ver"), ("yeni", "liste"),
     ("haftalık", "oluştur"), ("haftalik", "olustur"),
+    ("günlük", "oluştur"), ("gunluk", "olustur"),
+    ("günlük", "liste"), ("gunluk", "liste"),
+    ("haftalık", "liste"), ("haftalik", "liste"),
 ]
 
 
@@ -72,6 +75,11 @@ def normalize(metin: str) -> str:
         .replace("ç", "c").replace("ş", "s").replace("ğ", "g")
         .replace("İ", "i").replace("Ö", "o").replace("Ü", "u")
         .replace("Ç", "c").replace("Ş", "s").replace("Ğ", "g")
+        .replace("Ä±", "i").replace("Ã¶", "o").replace("Ã¼", "u")
+        .replace("Ã§", "c").replace("ÅŸ", "s").replace("ÄŸ", "g")
+        .replace("Ä°", "i").replace("Ã–", "o").replace("Ãœ", "u")
+        .replace("Ã‡", "c").replace("Å", "s").replace("Ä", "g")
+        .replace("�", "i").replace("i̇", "i")
     )
 
 
@@ -107,6 +115,14 @@ def yeni_menu_istegi_var_mi(metin_norm: str) -> bool:
         normalize(a) in metin_norm and normalize(b) in metin_norm
         for a, b in YENI_MENU_KELIMELERI_CIFT
     )
+
+
+def gunluk_liste_istegi_var_mi(metin_norm: str) -> bool:
+    return any(k in metin_norm for k in ["gunluk", "tek gun", "bugun", "bugunku"])
+
+
+def haftalik_liste_istegi_var_mi(metin_norm: str) -> bool:
+    return any(k in metin_norm for k in ["haftalik", "7 gun", "yedi gun"])
 
 
 def menu_json_sizintisi_mi(value) -> bool:
@@ -152,6 +168,37 @@ def profil_kisitlarini_cikar(profile: dict | None) -> dict:
 # ──────────────────────────────────────────────
 # 3. BACKEND SERVİS ÇAĞRILARI
 # ──────────────────────────────────────────────
+
+def _profil_ile_gunluk_menu_uret(user_email: str, profile: dict | None, ai_data: dict | None = None) -> bool:
+    """Tek günlük menüyü profil kısıtlarıyla üretip kaydeder."""
+    from services import aktif_menuyu_kaydet, diyet_olustur, kullanici_kontrol_et
+
+    ai_data = ai_data or {}
+    kisitlar = profil_kisitlarini_cikar(profile)
+
+    if kisitlar:
+        kullanici = {"kayitli_mi": True, "hedef_kalori": kisitlar.get("hedef_kalori", 2000)}
+    else:
+        kullanici = kullanici_kontrol_et(user_email)
+
+    if not kullanici.get("kayitli_mi"):
+        return False
+
+    sonuc = diyet_olustur(
+        hedef_kalori=kullanici.get("hedef_kalori", 2000),
+        alerjiler=list(dict.fromkeys((kisitlar.get("alerjiler") or []) + (ai_data.get("allergens") or []))),
+        sevilmeyenler=list(dict.fromkeys((kisitlar.get("sevilmeyenler") or []) + (ai_data.get("exclude_foods") or []))),
+        sevilenler=list(dict.fromkeys((kisitlar.get("sevilenler") or []) + (ai_data.get("include_foods") or []))),
+        saglik_sorunlari=list(dict.fromkeys((kisitlar.get("saglik_sorunlari") or []) + (ai_data.get("health_conditions") or []))),
+        diyet_turu=ai_data.get("diet_type") or kisitlar.get("diyet_turu") or "Standart",
+        ai_data=ai_data,
+    )
+
+    if sonuc.get("durum") == "Başarılı" and sonuc.get("ogunler"):
+        aktif_menuyu_kaydet(user_email, sonuc)
+        return True
+    return False
+
 
 def _profil_ile_haftalik_menu_uret(user_email: str, profile: dict | None, ai_data: dict | None = None) -> bool:
     """Haftalık menüyü profil kısıtlarıyla PuLP motoruna ürettirip kaydeder."""
@@ -306,7 +353,13 @@ def kural_tabanli_intent_isle(user_message: str, user_email: str, profile: dict 
 
     # B. YENİ MENÜ OLUŞTURMA
     if yeni_menu_istegi_var_mi(metin):
-        basarili = _profil_ile_haftalik_menu_uret(user_email, profile, {"intent": "yeni_menu_olustur", "operation": "generate"})
+        if gunluk_liste_istegi_var_mi(metin) and not haftalik_liste_istegi_var_mi(metin):
+            basarili = _profil_ile_gunluk_menu_uret(user_email, profile, {"intent": "yeni_menu_olustur", "operation": "generate", "plan_turu": "gunluk"})
+            if basarili:
+                return guvenli_response("Harika! Günlük diyet listeni profil ayarlarına göre oluşturdum. Dashboard’dan kontrol edebilirsin.", "menu_created")
+            return guvenli_response("Bu kısıtlamalarla günlük menü oluşturamadım. Kısıtlarını biraz azaltabilir miyiz?", None)
+
+        basarili = _profil_ile_haftalik_menu_uret(user_email, profile, {"intent": "yeni_menu_olustur", "operation": "generate", "plan_turu": "haftalik"})
         if basarili:
             return guvenli_response("Harika! 7 günlük tüm menünü yepyeni tariflerle ve profil ayarlarına göre baştan oluşturdum. Listeden kontrol edebilirsin! 🥗", "menu_created")
         return guvenli_response("Bu kısıtlamalarla yeni menü oluşturamadım. Kısıtlarını biraz azaltabilir miyiz?", None)
@@ -378,9 +431,16 @@ def llm_fallback_cevabi(user_message: str, user_email: str, profile: dict | None
 
     # LLM yine de menü oluşturma intent'i döndürdüyse kural motoruna yönlendir
     if intent == "yeni_menu_olustur":
+        metin = normalize(user_message)
+        if gunluk_liste_istegi_var_mi(metin) and not haftalik_liste_istegi_var_mi(metin):
+            basarili = _profil_ile_gunluk_menu_uret(user_email, profile, parsed)
+            if basarili:
+                return guvenli_response("Günlük diyet listeni profil ayarlarına göre başarıyla oluşturdum!", "menu_created")
+            return guvenli_response("Bu kısıtlamalarla günlük menü oluşturamadım. Kısıtları biraz azaltabilir miyiz?", None)
+
         basarili = _profil_ile_haftalik_menu_uret(user_email, profile, parsed)
         if basarili:
-            return guvenli_response("Yeni menünü profil ayarlarına göre başarıyla oluşturdum!", "menu_created")
+            return guvenli_response("Haftalık diyet listeni profil ayarlarına göre başarıyla oluşturdum!", "menu_created")
         return guvenli_response("Bu kısıtlamalarla yeni menü oluşturamadım. Kısıtları biraz azaltabilir miyiz?", None)
 
     if intent in ("gun_degistir", "ogun_degistir", "menuyu_guncelle"):

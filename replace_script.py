@@ -1,0 +1,8 @@
+content = open('c:/AkýllýBeslenmeAsistaný/Backend/services.py', 'r', encoding='utf-8').read()
+content = content.replace(\"if goal == 'kilo_verme':\n            hedef_kalori = int(tdee - 500)\", \"if goal in ['kilo_verme', 'kilo ver', 'Kilo Ver', 'lose_weight']:\n            hedef_kalori = int(tdee - 400)\")
+content = content.replace(\"elif goal == 'kilo_alma':\n            hedef_kalori = int(tdee + 500)\", \"elif goal in ['kilo_alma', 'kilo al', 'Kas Yap', 'gain_weight']:\n            hedef_kalori = int(tdee + 400)\")
+content = content.replace(\"if goal == 'kilo_verme':\n            hedef_kalori = int(tdee - 500)\", \"if goal in ['kilo_verme', 'kilo ver', 'Kilo Ver', 'lose_weight']:\n            hedef_kalori = int(tdee - 400)\")
+content = content.replace(\"elif goal == 'kilo_alma':\n            hedef_kalori = int(tdee + 500)\", \"elif goal in ['kilo_alma', 'kilo al', 'Kas Yap', 'gain_weight']:\n            hedef_kalori = int(tdee + 400)\")
+content = content.replace(\"if goal == "kilo_verme":\n            hedef_kalori = int(tdee - 500)\", \"if goal in ['kilo_verme', 'kilo ver', 'Kilo Ver', 'lose_weight']:\n            hedef_kalori = int(tdee - 400)\")
+content = content.replace(\"elif goal == "kilo_alma":\n            hedef_kalori = int(tdee + 500)\", \"elif goal in ['kilo_alma', 'kilo al', 'Kas Yap', 'gain_weight']:\n            hedef_kalori = int(tdee + 400)\")
+open('c:/AkýllýBeslenmeAsistaný/Backend/services.py', 'w', encoding='utf-8').write(content)

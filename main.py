@@ -60,6 +60,7 @@ class DiyetIstegi(BaseModel):
     sevilenler: List[str] = [] # YENİ EKLENDİ
     saglik_sorunlari: List[str] = []
     diyet_turu: str = "Standart"
+    plan_turu: str = "Haftalik"
 
 # 🌟 YENİ: Alternatif Bulma İstek Modeli
 class AlternatifIstegi(BaseModel):
@@ -94,15 +95,33 @@ def yemekleri_getir():
 @app.post("/api/diyet-hazirla")
 def akilli_diyet_olustur(istek: DiyetIstegi):
     # 🌟 GÜNCELLENDİ: haftalik_diyet_olustur kullanılıyor
-    from services import haftalik_diyet_olustur
-    sonuc = haftalik_diyet_olustur(
-        hedef_kalori=istek.hedef_kalori,
-        alerjiler=istek.alerjiler,
-        sevilmeyenler=istek.sevilmeyenler,
-        sevilenler=istek.sevilenler,
-        saglik_sorunlari=istek.saglik_sorunlari,
-        diyet_turu=istek.diyet_turu
+    plan_turu = (
+        str(istek.plan_turu or "").lower()
+        .replace("ı", "i").replace("ö", "o").replace("ü", "u")
+        .replace("ç", "c").replace("ş", "s").replace("ğ", "g")
+        .replace("Ä±", "i").replace("Ã¶", "o").replace("Ã¼", "u")
+        .replace("Ã§", "c").replace("ÅŸ", "s").replace("ÄŸ", "g")
+        .replace("�", "i")
     )
+    if "gunluk" in plan_turu:
+        sonuc = diyet_olustur(
+            hedef_kalori=istek.hedef_kalori,
+            alerjiler=istek.alerjiler,
+            sevilmeyenler=istek.sevilmeyenler,
+            sevilenler=istek.sevilenler,
+            saglik_sorunlari=istek.saglik_sorunlari,
+            diyet_turu=istek.diyet_turu
+        )
+    else:
+        from services import haftalik_diyet_olustur
+        sonuc = haftalik_diyet_olustur(
+            hedef_kalori=istek.hedef_kalori,
+            alerjiler=istek.alerjiler,
+            sevilmeyenler=istek.sevilmeyenler,
+            sevilenler=istek.sevilenler,
+            saglik_sorunlari=istek.saglik_sorunlari,
+            diyet_turu=istek.diyet_turu
+        )
     
     if sonuc["durum"] == "Başarılı":
         return sonuc
@@ -207,9 +226,45 @@ class ProfilGuncelleIstegi(BaseModel):
 
 @app.put("/api/profil-guncelle")
 def profil_guncelle(istek: ProfilGuncelleIstegi):
+    """
+    1. Profil tercihlerini (goal, dietType, kısıtlamalar) kaydeder.
+    2. Hemen ardından yeni profil verisiyle haftalık menüyü OTOMATİK yeniler.
+    3. Menü oluşturulamadıysa (Infeasible) uyarıyla birlikte başarılı döner.
+    """
+    from services import (
+        haftalik_diyet_olustur,
+        aktif_menuyu_kaydet,
+        kullanici_kontrol_et,
+        bmr_ve_kalori_hesapla,
+    )
+
+    # ── ADIM 1: Profil tercihlerini kaydet (fonksiyon yoksa atla) ────────
     try:
+        kullanici = kullanici_kontrol_et(istek.email)
+        if not kullanici.get("kayitli_mi"):
+            raise HTTPException(status_code=404, detail="Kalori hesaplamak için kayıtlı kullanıcı fiziksel bilgileri bulunamadı.")
+
+        yeni_hesaplanan_kalori = bmr_ve_kalori_hesapla(
+            kullanici.get("cinsiyet"),
+            kullanici.get("yas"),
+            kullanici.get("boy_cm"),
+            kullanici.get("kilo_kg"),
+            kullanici.get("hareket_katsayisi"),
+            istek.goal,
+        )
+        profil_data = {
+            "email": istek.email,
+            "goal": istek.goal,
+            "diet_type": istek.dietType,
+            "alerjiler": istek.alerjiler,
+            "sevilmeyenler": istek.sevilmeyenler,
+            "sevilenler": istek.sevilenler,
+            "saglik_sorunlari": istek.saglik_sorunlari,
+        }
+        profil_data["hedef_kalori"] = yeni_hesaplanan_kalori
+
         from services import profil_kaydet
-        sonuc = profil_kaydet(
+        profil_kaydet(
             email=istek.email,
             goal=istek.goal,
             diet_type=istek.dietType,
@@ -217,14 +272,71 @@ def profil_guncelle(istek: ProfilGuncelleIstegi):
             sevilmeyenler=istek.sevilmeyenler,
             sevilenler=istek.sevilenler,
             saglik_sorunlari=istek.saglik_sorunlari,
+            hedef_kalori=profil_data["hedef_kalori"],
         )
-        return sonuc
-    except (ImportError, AttributeError):
-        # profil_kaydet henüz services.py'da tanımlı değilse graceful fallback
-        # Tercihler localStorage + onboarding üzerinden de taşınır
-        return {"durum": "Başarılı", "mesaj": "Tercihler güncellendi."}
+    except (ImportError, AttributeError) as e:
+        raise HTTPException(status_code=500, detail=f"Profil kaydetme servisi bulunamadı: {str(e)}")
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Profil güncellenirken hata: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Profil kaydedilemedi: {str(e)}")
+
+    # ── ADIM 2: Kullanıcının kalori hedefini bul ─────────────────────────
+    hedef_kalori = profil_data["hedef_kalori"]
+
+    goal_normalized = str(istek.goal or "koruma").lower().strip()
+
+    # ── ADIM 3: Yeni profil verisiyle haftalık menüyü yeniden üret ───────
+    try:
+        ai_data = {
+            "goal": goal_normalized,
+            "diet_type": istek.dietType or "Standart",
+            "allergens": istek.alerjiler,
+            "exclude_foods": istek.sevilmeyenler,
+            "include_foods": istek.sevilenler,
+            "health_conditions": istek.saglik_sorunlari,
+        }
+
+        menu_sonuc = haftalik_diyet_olustur(
+            hedef_kalori=hedef_kalori,
+            alerjiler=istek.alerjiler,
+            sevilmeyenler=istek.sevilmeyenler,
+            sevilenler=istek.sevilenler,
+            saglik_sorunlari=istek.saglik_sorunlari,
+            diyet_turu=istek.dietType or "Standart",
+            ai_data=ai_data,
+        )
+
+        if menu_sonuc.get("durum") == "Başarılı" and menu_sonuc.get("haftalik_plan"):
+            aktif_menuyu_kaydet(istek.email, menu_sonuc)
+            return {
+                "durum": "Başarılı",
+                "mesaj": "Profil güncellendi ve yeni menünüz oluşturuldu.",
+                "menu_updated": True,
+            }
+        else:
+            # Menü oluşturulamadı (Infeasible) — profil kaydedildi ama menü değişmedi
+            return {
+                "durum": "Başarılı",
+                "mesaj": "Profil güncellendi.",
+                "menu_updated": False,
+                "uyari": (
+                    menu_sonuc.get("mesaj")
+                    or "Bu kısıtlamalarla yeni menü oluşturulamadı. "
+                       "Lütfen diyet ayarlarınızı esnetin."
+                ),
+            }
+
+    except Exception as e:
+        # Menü üretimi çöktü — profil zaten kaydedildi, sadece uyarı ver
+        print(f"[profil-guncelle] Menü oluşturma hatası: {e}")
+        return {
+            "durum": "Başarılı",
+            "mesaj": "Profil güncellendi.",
+            "menu_updated": False,
+            "uyari": "Profil güncellendi ancak bu kısıtlamalarla yeni menü oluşturulamadı. Lütfen diyet ayarlarınızı esnetin.",
+        }
+
 
 class ChatRequest(BaseModel):
     user_message: str

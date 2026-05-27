@@ -1,30 +1,45 @@
-import pandas as pd
-from sqlalchemy import create_engine
+from pathlib import Path
 import urllib
 
-# 1. Kusursuz hale getirdiğin Excel dosyanı oku
-excel_dosyasi = 'dataset_fixed.xlsx'
+import pandas as pd
+from sqlalchemy import create_engine
+from sqlalchemy.exc import OperationalError
+
+
+excel_dosyasi = Path(__file__).resolve().parent / "foods_final_v2_final.xlsx"
 df = pd.read_excel(excel_dosyasi)
+df = df.rename(columns={
+    kolon: "Yemek_Ad\u0131"
+    for kolon in df.columns
+    if str(kolon).strip().startswith("Yemek_Ad") and str(kolon).strip() != "Yemek_Ad\u0131"
+})
 
-# 2. MSSQL Bağlantı Ayarları (Sunucu adını senin için ekledim)
-server_adi = 'LAPTOP-V013QBHO' 
-veritabani_adi = 'DiyetAppDB' 
+server_adi = "LAPTOP-V013QBHO"
+veritabani_adi = "DiyetAppDB"
 
-params = urllib.parse.quote_plus(
-    f'DRIVER={{ODBC Driver 17 for SQL Server}};'
-    f'SERVER={server_adi};'
-    f'DATABASE={veritabani_adi};'
-    f'Trusted_Connection=yes;'
-    f'Encrypt=no;'
-    f'TrustServerCertificate=yes;'
-)
+print("MSSQL'e baglaniliyor...")
 
-print("MSSQL'e bağlanılıyor...")
+son_hata = None
+for driver in ["ODBC Driver 17 for SQL Server", "SQL Server"]:
+    params = urllib.parse.quote_plus(
+        f"DRIVER={{{driver}}};"
+        f"SERVER={server_adi};"
+        f"DATABASE={veritabani_adi};"
+        f"Trusted_Connection=yes;"
+        f"Encrypt=no;"
+        f"TrustServerCertificate=yes;"
+    )
+    try:
+        print(f"Driver deneniyor: {driver}")
+        engine = create_engine(f"mssql+pyodbc:///?odbc_connect={params}")
+        df.to_sql("Yemekler", con=engine, if_exists="replace", index=False)
+        son_hata = None
+        break
+    except OperationalError as e:
+        son_hata = e
+        print(f"{driver} ile baglanti kurulamadi.")
 
-# 3. SQLAlchemy Motorunu (Engine) Oluştur
-engine = create_engine(f'mssql+pyodbc:///?odbc_connect={params}')
+if son_hata:
+    raise son_hata
 
-# 4. Veriyi SQL'e Aktar
-df.to_sql('Yemekler', con=engine, if_exists='replace', index=False)
-
-print("🚀 Hedef tamamlandı! 318 satırlık veri seti MSSQL 'Yemekler' tablosuna başarıyla aktarıldı!")
+print(f"Hedef tamamlandi! {len(df)} satirlik foods_final veri seti MSSQL 'Yemekler' tablosuna basariyla aktarildi!")

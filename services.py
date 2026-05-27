@@ -23,8 +23,9 @@ params = urllib.parse.quote_plus(
 engine = create_engine(f'mssql+pyodbc:///?odbc_connect={params}')
 
 BASE_DIR = Path(__file__).resolve().parent
-DATASET_PATH = BASE_DIR / "dataset_fixed.xlsx"
+DATASET_PATH = BASE_DIR / "foods_final_v2_final.xlsx"
 DB_KULLANILABILIR = True
+YEMEK_ADI_KOLONU = "Yemek_Ad\u0131"
 
 
 class AttrDict(dict):
@@ -33,6 +34,18 @@ class AttrDict(dict):
             return self[key]
         except KeyError as exc:
             raise AttributeError(key) from exc
+
+
+def dataseti_oku():
+    df = pd.read_excel(DATASET_PATH)
+    kolon_eslestirme = {}
+    for kolon in df.columns:
+        kolon_adi = str(kolon).strip()
+        if kolon_adi.startswith("Yemek_Ad") and kolon_adi != YEMEK_ADI_KOLONU:
+            kolon_eslestirme[kolon] = YEMEK_ADI_KOLONU
+    if kolon_eslestirme:
+        df = df.rename(columns=kolon_eslestirme)
+    return df
 
 
 def yemekleri_kaynaktan_getir(sorgu, haric_tutulacak_idler):
@@ -46,7 +59,7 @@ def yemekleri_kaynaktan_getir(sorgu, haric_tutulacak_idler):
             DB_KULLANILABILIR = False
             print(f"Veritabanına bağlanılamadı, Excel veri seti kullanılacak: {e}")
 
-    df = pd.read_excel(DATASET_PATH)
+    df = dataseti_oku()
     df = df[
         df["Kalori_Kcal"].notna()
         & df["Protein_g"].notna()
@@ -66,6 +79,7 @@ def normalize_tr(metin: str) -> str:
 def diyet_olustur(hedef_kalori: int, alerjiler: list = None, sevilmeyenler: list = None, saglik_sorunlari: list = None, diyet_turu: str = "Standart", sevilenler: list = None, haric_tutulacak_idler: list = None, yasakli_kategoriler: list = None, ai_data: dict = None, yasakli_ozel_kategoriler: list = None):
     
     goal = ai_data.get('goal', 'koruma') if ai_data else 'koruma'
+    hedef_str = str(goal).lower().strip()
     yasakli_ozel_kategoriler = yasakli_ozel_kategoriler or []
     
     if ai_data and ai_data.get('age') and ai_data.get('weight') and ai_data.get('height') and ai_data.get('gender'):
@@ -87,27 +101,44 @@ def diyet_olustur(hedef_kalori: int, alerjiler: list = None, sevilmeyenler: list
             'orta': 1.55,
             'cok_hareketli': 1.725
         }
-        tdee = bmr * activity_multipliers.get(activity_level, 1.2)
 
-        if goal == 'kilo_verme':
-            hedef_kalori = int(tdee - 500)
-        elif goal == 'kilo_alma':
-            hedef_kalori = int(tdee + 500)
+        tdee = bmr * activity_multipliers.get(activity_level, 1.2)
+        hedef_str = str(goal).lower().strip()
+
+        if "ver" in hedef_str or "lose" in hedef_str:
+            hedef_kalori = tdee - 400
+        elif "al" in hedef_str or "gain" in hedef_str:
+            hedef_kalori = tdee + 400
         else:
-            hedef_kalori = int(tdee)
-    
-    alerjiler = [a.lower() for a in (alerjiler or [])]
-    sevilmeyenler = [s.lower() for s in (sevilmeyenler or [])]
+            hedef_kalori = tdee
+            
+    hedef_kalori = max(1200, int(hedef_kalori))
+    print(f"HESAPLANAN YENİ KALORİ: {hedef_kalori} | Hedef: {hedef_str}")
+        
+    alerjiler = [str(a).lower() for a in (alerjiler or []) if str(a).strip()]
+    sevilmeyenler = [str(s).lower() for s in (sevilmeyenler or []) if str(s).strip()]
     sevilenler = [f.lower() for f in (sevilenler or [])]
     
     alerjiler_norm = [normalize_tr(a) for a in alerjiler]
     sevilmeyenler_norm = [normalize_tr(s) for s in sevilmeyenler]
+    sevilmeyen_es_anlamlilar = {
+        "balik": ["balik", "somon", "hamsi", "ton baligi", "levrek", "cipura", "uskumru", "deniz urunleri"],
+        "deniz urunleri": ["deniz urunleri", "balik", "somon", "hamsi", "karides", "midye", "kalamar"],
+        "tavuk": ["tavuk", "pilic", "hindi"],
+        "et": ["et", "kirmizi et", "kebap", "sarkuteri", "sakatat", "kiyma", "kavurma", "sucuk", "sosis", "pastirma", "ciger", "doner", "dana", "kuzu", "burger", "hamburger", "cheeseburger", "kofte", "tantuni", "lahmacun", "manti"],
+        "kirmizi et": ["et", "kirmizi et", "kebap", "sarkuteri", "sakatat", "kiyma", "kavurma", "sucuk", "sosis", "pastirma", "ciger", "doner", "dana", "kuzu", "burger", "hamburger", "cheeseburger", "kofte", "tantuni", "lahmacun", "manti"],
+        "sakatat": ["sakatat", "iskembe", "kelle", "paca", "ciger", "yurek", "dil", "kokorec"],
+    }
+    genisletilmis_sevilmeyenler = []
+    for kelime in sevilmeyenler_norm:
+        genisletilmis_sevilmeyenler.extend(sevilmeyen_es_anlamlilar.get(kelime, [kelime]))
+    sevilmeyenler_norm = list(dict.fromkeys(genisletilmis_sevilmeyenler))
     
     saglik_sorunlari = saglik_sorunlari or []
     if ai_data and ai_data.get('health_conditions'):
         saglik_sorunlari.extend(ai_data.get('health_conditions'))
-    saglik_sorunlari_lower = [str(s).lower() for s in saglik_sorunlari]
-    diyabet_var_mi = any(w in s for s in saglik_sorunlari_lower for w in ["diyabet", "diabetic", "insülin", "insulin"])
+    saglik_sorunlari_norm = [normalize_tr(s) for s in saglik_sorunlari]
+    diyabet_var_mi = any(w in s for s in saglik_sorunlari_norm for w in ["diyabet", "diabetic", "insulin"])
 
     haric_tutulacak_idler = haric_tutulacak_idler or []
     haric_str = ", ".join(map(str, haric_tutulacak_idler)) if haric_tutulacak_idler else "-1"
@@ -138,13 +169,15 @@ def diyet_olustur(hedef_kalori: int, alerjiler: list = None, sevilmeyenler: list
 
             isim_norm = normalize_tr(isim_lower)
             malz_norm = normalize_tr(malzemeler_db)
+            kat_norm = normalize_tr(kat_lower)
+            alerjen_norm = normalize_tr(alerjen_db)
 
             # 🛑 1. DİYET TÜRÜ FİLTRESİ (Veritabanı Odaklı)
             if diyet_turu.lower() == "vegan" and diyet_turu_db != "vegan": continue
             if diyet_turu.lower() == "vejetaryen" and diyet_turu_db not in ["vegan", "vejetaryen"]: continue
             
             # 🛑 2. ALERJİ FİLTRESİ (Genişletilmiş Alt Metin Araması)
-            if any(a in isim_norm or a in malz_norm for a in alerjiler_norm): continue
+            if any(a in isim_norm or a in malz_norm or a in alerjen_norm for a in alerjiler_norm): continue
             
             # 🛑 3. ÖZEL SAKATAT FİLTRESİ
             if "sakatat" in sevilmeyenler:
@@ -152,7 +185,7 @@ def diyet_olustur(hedef_kalori: int, alerjiler: list = None, sevilmeyenler: list
                     continue
 
             # Sevilmeyenler
-            if any(s in isim_norm or s in malz_norm for s in sevilmeyenler_norm): continue
+            if any(s in isim_norm or s in malz_norm or s in kat_norm or s in alerjen_norm for s in sevilmeyenler_norm): continue
 
             skor = random.uniform(1, 100)
             if any(f in isim_lower or f in malzemeler_db for f in sevilenler): skor -= 1000
@@ -303,7 +336,7 @@ def diyet_olustur(hedef_kalori: int, alerjiler: list = None, sevilmeyenler: list
     if v_kirmizietler: prob += pulp.lpSum(v_kirmizietler) <= 1
     if v_baliklar: prob += pulp.lpSum(v_baliklar) <= 1
 
-    prob.solve(pulp.PULP_CBC_CMD(msg=False))
+    prob.solve(pulp.PULP_CBC_CMD(timeLimit=15, msg=False))
     
     # 🚨 AŞAMA 3: ÇÖZÜM KONTROLÜ (INFEASIBLE HANDLING)
     if pulp.LpStatus[prob.status] != 'Optimal':
@@ -417,7 +450,214 @@ def haftalik_diyet_olustur(hedef_kalori: int, alerjiler: list = None, sevilmeyen
         if not basarili:
             return {"durum": "Başarısız", "mesaj": "Kısıtlamalarınıza uygun 7 günlük menü kombinasyonu bulunamadı. Lütfen kısıtlamaları biraz esnetin."}
 
-    return {"durum": "Başarılı", "haftalik_plan": haftalik_plan}
+    def plan_makrolarini_guncelle(gun_verisi):
+        toplam = {"kalori": 0, "protein_g": 0, "karb_g": 0, "yag_g": 0}
+        for yemek_listesi in gun_verisi.get("ogunler", {}).values():
+            for yemek in yemek_listesi:
+                toplam["kalori"] += float(yemek.get("kalori", 0) or 0)
+                toplam["protein_g"] += float(yemek.get("protein", 0) or 0)
+                toplam["karb_g"] += float(yemek.get("karb", 0) or 0)
+                toplam["yag_g"] += float(yemek.get("yag", 0) or 0)
+        gun_verisi["gerceklesen"] = {
+            "kalori": round(toplam["kalori"]),
+            "protein_g": round(toplam["protein_g"]),
+            "karb_g": round(toplam["karb_g"]),
+            "yag_g": round(toplam["yag_g"]),
+        }
+
+    def haftalik_plan_validate(plan):
+        issues = []
+        selected_food_names = []
+        onceki_gun_aileleri = set()
+
+        for gun, gun_verisi in plan.items():
+            gun_aileleri = set()
+            for ogun_adi, yemek_listesi in gun_verisi.get("ogunler", {}).items():
+                karb_sayisi = 0
+                snack_turleri = []
+                for yemek in yemek_listesi:
+                    selected_food_names.append(yemek.get("isim_key") or yemek_anahtari(yemek.get("isim", "")))
+                    aile = yemek.get("aile") or yemek_ailesi(yemek)
+                    gun_aileleri.add(aile)
+                    if yemek.get("karb_agir") or karb_agir_mi(yemek):
+                        karb_sayisi += 1
+                    if yemek.get("fried"):
+                        snack_turleri.append("__fried__")
+                    if ogun_adi == slot_to_ogun["ara"]:
+                        snack_turleri.append(yemek.get("snack_turu") or snack_turu(yemek))
+
+                if karb_sayisi > 1:
+                    issues.append(f"{gun} {ogun_adi}: fazla karbonhidrat agir yemek")
+                if snack_turleri.count("__fried__") > 1:
+                    issues.append(f"{gun} {ogun_adi}: fazla agir/kizartma yemek")
+                if len(snack_turleri) != len(set(snack_turleri)):
+                    issues.append(f"{gun} {ogun_adi}: ayni snack turu tekrar ediyor")
+
+            if onceki_gun_aileleri & gun_aileleri:
+                issues.append(f"{gun}: onceki gunle benzer yemek ailesi tekrar ediyor")
+            onceki_gun_aileleri = gun_aileleri
+
+        tekrarlar = pd.Series(selected_food_names).value_counts() if selected_food_names else pd.Series(dtype="int64")
+        for isim_key, adet in tekrarlar.items():
+            if adet > 2:
+                issues.append(f"{isim_key}: haftada {adet} kez secildi")
+            elif tekrar_limiti == 1 and adet > 1:
+                issues.append(f"{isim_key}: haftada 1 kez hedefi asildi")
+        return issues
+
+    def repair_tekrarli_yemekler(plan):
+        kullanilan = set()
+        for _, gun_verisi in plan.items():
+            for _, yemek_listesi in gun_verisi.get("ogunler", {}).items():
+                for index, yemek in enumerate(list(yemek_listesi)):
+                    isim_key = yemek.get("isim_key") or yemek_anahtari(yemek.get("isim", ""))
+                    if isim_key not in kullanilan:
+                        kullanilan.add(isim_key)
+                        continue
+
+                    adaylar = [
+                        aday for aday in yemekler
+                        if aday["ozel_kategori"] == yemek.get("ozel_kategori")
+                        and aday["isim_key"] not in kullanilan
+                        and abs(aday["kalori"] - float(yemek.get("kalori", 0) or 0)) <= 120
+                    ]
+                    if yemek.get("karb_agir") or karb_agir_mi(yemek):
+                        adaylar = [aday for aday in adaylar if aday["karb_agir"]]
+                    adaylar.sort(key=lambda aday: (
+                        abs(aday["kalori"] - float(yemek.get("kalori", 0) or 0)),
+                        abs(aday["protein"] - float(yemek.get("protein", 0) or 0)),
+                    ))
+                    if adaylar:
+                        yemek_listesi[index] = adaylar[0].copy()
+                        kullanilan.add(adaylar[0]["isim_key"])
+
+                for _ in range(2):
+                    karb_indexleri = [i for i, yemek in enumerate(yemek_listesi) if yemek.get("karb_agir") or karb_agir_mi(yemek)]
+                    fried_indexleri = [i for i, yemek in enumerate(yemek_listesi) if yemek.get("fried")]
+                    hedef_index = None
+                    if len(karb_indexleri) > 1:
+                        hedef_index = max(karb_indexleri, key=lambda i: float(yemek_listesi[i].get("karb", 0) or 0))
+                    elif len(fried_indexleri) > 1:
+                        hedef_index = max(fried_indexleri, key=lambda i: float(yemek_listesi[i].get("yag", 0) or 0))
+
+                    if hedef_index is None:
+                        break
+
+                    eski = yemek_listesi[hedef_index]
+                    adaylar = [
+                        aday for aday in yemekler
+                        if aday["ozel_kategori"] == eski.get("ozel_kategori")
+                        and aday["isim_key"] not in kullanilan
+                        and not aday["fried"]
+                        and not (
+                            (eski.get("karb_agir") or karb_agir_mi(eski))
+                            and aday["karb_agir"]
+                        )
+                        and abs(aday["kalori"] - float(eski.get("kalori", 0) or 0)) <= 180
+                    ]
+                    adaylar.sort(key=lambda aday: (
+                        0 if aday["high_protein"] else 1,
+                        abs(aday["kalori"] - float(eski.get("kalori", 0) or 0)),
+                    ))
+                    if not adaylar:
+                        break
+                    yemek_listesi[hedef_index] = adaylar[0].copy()
+                    kullanilan.add(adaylar[0]["isim_key"])
+            plan_makrolarini_guncelle(gun_verisi)
+        return plan
+
+    def repair_gunluk_makrolar(plan):
+        kullanilan = {
+            yemek.get("isim_key") or yemek_anahtari(yemek.get("isim", ""))
+            for gun_verisi in plan.values()
+            for yemek_listesi in gun_verisi.get("ogunler", {}).values()
+            for yemek in yemek_listesi
+        }
+
+        for _, gun_verisi in plan.items():
+            for _ in range(5):
+                plan_makrolarini_guncelle(gun_verisi)
+                gerceklesen = gun_verisi.get("gerceklesen", {})
+                protein_dusuk = gerceklesen.get("protein_g", 0) < protein_minimumu
+                yag_yuksek = gerceklesen.get("yag_g", 0) > yag_ust_hedef
+                if not protein_dusuk and not yag_yuksek:
+                    break
+
+                en_iyi = None
+                for ogun_adi, yemek_listesi in gun_verisi.get("ogunler", {}).items():
+                    for index, eski in enumerate(yemek_listesi):
+                        if ogun_adi == "Sabah":
+                            uygun_kategoriler = kahvalti_kat
+                        elif ogun_adi == slot_to_ogun["ara"]:
+                            uygun_kategoriler = ara_kat
+                        elif eski.get("ozel_kategori") == "ana_yemek":
+                            uygun_kategoriler = ana_kat
+                        else:
+                            uygun_kategoriler = yan_kat + (ana_kat if protein_dusuk else [])
+                        if protein_dusuk:
+                            uygun_kategoriler = list(dict.fromkeys(list(uygun_kategoriler) + ana_kat + kahvalti_kat + ara_kat))
+
+                        adaylar = [
+                            aday for aday in yemekler
+                            if aday["ozel_kategori"] in uygun_kategoriler
+                            and aday["isim_key"] not in kullanilan
+                            and not aday["sugary_drink"]
+                            and abs(aday["kalori"] - float(eski.get("kalori", 0) or 0)) <= 320
+                        ]
+                        if not adaylar:
+                            continue
+
+                        for aday in adaylar:
+                            protein_kazanci = aday["protein"] - float(eski.get("protein", 0) or 0)
+                            yag_azalisi = float(eski.get("yag", 0) or 0) - aday["yag"]
+                            puan = 0
+                            if protein_dusuk:
+                                puan += protein_kazanci * 6
+                                if aday["high_protein"]:
+                                    puan += 30
+                            if yag_yuksek:
+                                puan += yag_azalisi * 5
+                                if aday["fried"]:
+                                    puan -= 35
+                            if ogun_adi == slot_to_ogun["ara"] and aday["healthy_snack"]:
+                                puan += 20
+                            if puan <= 0:
+                                continue
+                            if en_iyi is None or puan > en_iyi[0]:
+                                en_iyi = (puan, yemek_listesi, index, aday)
+
+                if en_iyi is None:
+                    break
+                _, yemek_listesi, index, aday = en_iyi
+                eski_key = yemek_listesi[index].get("isim_key") or yemek_anahtari(yemek_listesi[index].get("isim", ""))
+                kullanilan.discard(eski_key)
+                yemek_listesi[index] = aday.copy()
+                kullanilan.add(aday["isim_key"])
+
+            plan_makrolarini_guncelle(gun_verisi)
+        return plan
+
+    validation_issues = haftalik_plan_validate(haftalik_plan)
+    haftalik_plan = repair_gunluk_makrolar(haftalik_plan)
+    if validation_issues:
+        haftalik_plan = repair_tekrarli_yemekler(haftalik_plan)
+        haftalik_plan = repair_gunluk_makrolar(haftalik_plan)
+        validation_issues = haftalik_plan_validate(haftalik_plan)
+        if validation_issues:
+            warning_reasons.append("Sağlık ve kalori önceliği nedeniyle bazı çeşitlilik hedefleri tam karşılanamadı.")
+
+    makro_uyarisi_var = any(
+        gun_verisi.get("gerceklesen", {}).get("protein_g", 0) < protein_minimumu
+        or gun_verisi.get("gerceklesen", {}).get("yag_g", 0) > yag_ust_hedef
+        for gun_verisi in haftalik_plan.values()
+    )
+    if makro_uyarisi_var:
+        warning_reasons.append("Kısıtlı uygun yemek havuzu nedeniyle bazı günlerde protein/yağ hedefi ideal aralığın dışında kaldı.")
+
+    response = {"durum": "Başarılı", "haftalik_plan": haftalik_plan}
+    if warning_reasons:
+        response["warning"] = " ".join(dict.fromkeys(warning_reasons))
+    return response
 def haftalik_diyet_olustur(hedef_kalori: int, alerjiler: list = None, sevilmeyenler: list = None, saglik_sorunlari: list = None, diyet_turu: str = "Standart", sevilenler: list = None, ai_data: dict = None):
     basarisiz_cevap = {
         "durum": "Başarısız",
@@ -496,7 +736,83 @@ def haftalik_diyet_olustur(hedef_kalori: int, alerjiler: list = None, sevilmeyen
             return varsayilan
         return value
 
+    def yemek_anahtari(isim):
+        ad = norm(isim)
+        for temizlenecek in [
+            "1 kase", "1 porsiyon", "1 dilim", "1 adet", "1 avuc", "1 bardak",
+            "corbasi", "corba", "yemegi", "salatasi", "pilavi",
+        ]:
+            ad = ad.replace(temizlenecek, " ")
+        return " ".join(ad.split())
+
+    def yemek_ailesi(yemek):
+        metin = norm(f"{yemek.get('isim', '')} {yemek.get('malzemeler', '')} {yemek.get('kategori', '')}")
+        aile_kelimeleri = [
+            ("makarna", ["makarna", "eriste", "noodle"]),
+            ("pilav", ["pilav", "pirinc", "bulgur"]),
+            ("pide", ["pide", "lahmacun", "bazlama"]),
+            ("sehriye_corba", ["sehriye"]),
+            ("mercimek_corba", ["mercimek", "ezogelin", "mahluta"]),
+            ("tavuk", ["tavuk", "pilic", "hindi"]),
+            ("balik", ["balik", "somon", "hamsi", "ton baligi", "levrek", "cipura"]),
+            ("kirmizi_et", ["kirmizi et", "kiyma", "dana", "kuzu", "kofte", "kebap", "doner"]),
+            ("kuruyemis", ["ay cekirdegi", "kaju", "badem", "findik", "ceviz", "fistik", "kuruyemis"]),
+            ("kuru_meyve", ["kuru incir", "kuru kayisi", "kuru uzum", "hurma"]),
+            ("kraker", ["kraker", "cubuk"]),
+            ("meyve", ["elma", "muz", "portakal", "mandalina", "meyve"]),
+            ("tatli_snack", ["bar", "cikolata", "kestane"]),
+        ]
+        for aile, kelimeler in aile_kelimeleri:
+            if any(kelime in metin for kelime in kelimeler):
+                return aile
+        return f"{yemek.get('ozel_kategori', 'diger')}:{yemek_anahtari(yemek.get('isim', ''))[:18]}"
+
+    def karb_agir_mi(yemek):
+        metin = norm(f"{yemek.get('isim', '')} {yemek.get('malzemeler', '')} {yemek.get('kategori', '')}")
+        if yemek.get("ozel_kategori") in ["karb_yan", "hamur_isi"]:
+            return True
+        if float(yemek.get("karb", 0) or 0) >= 25 and float(yemek.get("protein", 0) or 0) < 18:
+            return True
+        return any(k in metin for k in ["makarna", "pilav", "pirinc", "bulgur", "pide", "kisir", "patates", "sehriye", "ekmek", "bazlama", "lahmacun"])
+
+    def snack_turu(yemek):
+        metin = norm(f"{yemek.get('isim', '')} {yemek.get('malzemeler', '')} {yemek.get('kategori', '')}")
+        if any(k in metin for k in ["ay cekirdegi", "kaju", "badem", "findik", "ceviz", "fistik", "kuruyemis"]):
+            return "kuruyemis"
+        if any(k in metin for k in ["kuru incir", "kuru kayisi", "kuru uzum", "hurma"]):
+            return "kuru_meyve"
+        if any(k in metin for k in ["kraker", "cubuk"]):
+            return "kraker"
+        if yemek.get("ozel_kategori") == "meyve":
+            return "meyve"
+        if yemek.get("ozel_kategori") == "icecek":
+            return "icecek"
+        return yemek.get("ozel_kategori", "snack")
+
+    def yemek_tagleri(yemek):
+        metin = norm(f"{yemek.get('isim', '')} {yemek.get('malzemeler', '')} {yemek.get('kategori', '')}")
+        protein = float(yemek.get("protein", 0) or 0)
+        karb = float(yemek.get("karb", 0) or 0)
+        yag = float(yemek.get("yag", 0) or 0)
+        tags = set()
+        if protein >= 18 or protein >= max(8, karb * 0.45):
+            tags.add("high_protein")
+        if karb_agir_mi(yemek):
+            tags.add("carb_heavy")
+        if yag >= 22 or any(k in metin for k in ["kizart", "patates kizart", "saksuka", "nugget", "cips", "doner", "tantuni", "sucuk", "kavurma"]):
+            tags.add("fried")
+        if any(k in metin for k in ["kola", "gazoz", "sprite", "fanta", "ice tea", "meyve suyu", "nektar", "enerji icecegi", "milkshake", "limonata"]):
+            tags.add("sugary_drink")
+        if any(k in metin for k in ["kefir", "yogurt", "yoğurt", "ayran", "badem", "ceviz", "findik", "kaju", "meyve", "elma", "muz", "portakal"]):
+            tags.add("healthy_snack")
+        if any(k in metin for k in ["doner", "tantuni", "pide", "lahmacun"]):
+            tags.add("heavy_main")
+        if any(k in metin for k in ["recel", "pekmez", "bal", "cikolata", "seker", "tatli", "kurabiye", "bar"]):
+            tags.add("high_sugar_snack")
+        return tags
+
     goal = ai_data.get("goal", "koruma") if ai_data else "koruma"
+    hedef_str = str(goal).lower().strip()
     if ai_data and ai_data.get("age") and ai_data.get("weight") and ai_data.get("height") and ai_data.get("gender"):
         age = ai_data["age"]
         weight = ai_data["weight"]
@@ -518,15 +834,24 @@ def haftalik_diyet_olustur(hedef_kalori: int, alerjiler: list = None, sevilmeyen
             "çok_hareketli": 1.725,
         }
         tdee = bmr * activity_multipliers.get(activity_level, 1.2)
-        if goal == "kilo_verme":
-            hedef_kalori = int(tdee - 500)
-        elif goal == "kilo_alma":
-            hedef_kalori = int(tdee + 500)
+        hedef_str = str(goal).lower().strip()
+        if "ver" in hedef_str or "lose" in hedef_str:
+            hedef_kalori = tdee - 400
+        elif "al" in hedef_str or "gain" in hedef_str:
+            hedef_kalori = tdee + 400
         else:
-            hedef_kalori = int(tdee)
+            hedef_kalori = tdee
 
-    if hedef_kalori < 1200:
-        hedef_kalori = 1200
+    hedef_kalori = max(1200, int(hedef_kalori))
+    print(f"HESAPLANAN YENİ KALORİ: {hedef_kalori} | Hedef: {hedef_str}")
+    tahmini_kilo = None
+    if ai_data and ai_data.get("weight"):
+        try:
+            tahmini_kilo = float(ai_data.get("weight"))
+        except (TypeError, ValueError):
+            tahmini_kilo = None
+    protein_minimumu = max(80, int((tahmini_kilo or 100) * 0.8))
+    yag_ust_hedef = 90
 
     alerjiler = [norm(a) for a in (alerjiler or []) if str(a).strip()]
     sevilmeyenler = [norm(s) for s in (sevilmeyenler or []) if str(s).strip()]
@@ -656,12 +981,38 @@ def haftalik_diyet_olustur(hedef_kalori: int, alerjiler: list = None, sevilmeyen
             "rastgele_odul": random.uniform(0, 1),
         })
 
+    for yemek in yemekler:
+        yemek["isim_key"] = yemek_anahtari(yemek["isim"])
+        yemek["aile"] = yemek_ailesi(yemek)
+        yemek["karb_agir"] = karb_agir_mi(yemek)
+        yemek["snack_turu"] = snack_turu(yemek)
+        yemek["tags"] = yemek_tagleri(yemek)
+        yemek["high_protein"] = "high_protein" in yemek["tags"]
+        yemek["carb_heavy"] = "carb_heavy" in yemek["tags"]
+        yemek["fried"] = "fried" in yemek["tags"]
+        yemek["sugary_drink"] = "sugary_drink" in yemek["tags"]
+        yemek["healthy_snack"] = "healthy_snack" in yemek["tags"]
+
     kahvalti_kat = ["kahvalti_ana", "kahvalti_yan", "peynir", "hamur_isi"]
     ana_kat = ["ana_yemek"]
     yan_kat = ["corba", "salata_meze", "karb_yan"]
     ara_kat = ["snack_tatli", "snack_kuruyemis", "icecek", "meyve"]
     uygun_katlar = set(kahvalti_kat + ana_kat + yan_kat + ara_kat)
     yemekler = [y for y in yemekler if y["ozel_kategori"] in uygun_katlar]
+    tekrar_limiti = 1
+    minimum_ihtiyac = {
+        "kahvalti": 14,
+        "ana": 14,
+        "yan": 21,
+        "ara": 7,
+    }
+    if (
+        sum(1 for y in yemekler if y["ozel_kategori"] in kahvalti_kat) < minimum_ihtiyac["kahvalti"]
+        or sum(1 for y in yemekler if y["ozel_kategori"] in ana_kat) < minimum_ihtiyac["ana"]
+        or sum(1 for y in yemekler if y["ozel_kategori"] in yan_kat) < minimum_ihtiyac["yan"]
+        or sum(1 for y in yemekler if y["ozel_kategori"] in ara_kat) < minimum_ihtiyac["ara"]
+    ):
+        tekrar_limiti = 2
 
     def kategori_var(kategoriler, minimum):
         return sum(1 for y in yemekler if y["ozel_kategori"] in kategoriler) >= minimum
@@ -699,15 +1050,45 @@ def haftalik_diyet_olustur(hedef_kalori: int, alerjiler: list = None, sevilmeyen
     if not x:
         return basarisiz_cevap
 
-    prob += pulp.lpSum(
-        x[key] * (yemek_by_id[key[2]]["sevilen_odul"] + yemek_by_id[key[2]]["rastgele_odul"] - 0.01)
+    objective_terms = [
+        x[key] * (
+            yemek_by_id[key[2]]["sevilen_odul"]
+            + yemek_by_id[key[2]]["rastgele_odul"]
+            + (18 if yemek_by_id[key[2]]["high_protein"] else 0)
+            + (22 if yemek_by_id[key[2]]["healthy_snack"] and key[1] == "ara" else 0)
+            - (80 if yemek_by_id[key[2]]["sugary_drink"] and key[1] == "ara" else 0)
+            - (65 if diyabet_var_mi and yemek_by_id[key[2]]["sugary_drink"] else 0)
+            - (45 if diyabet_var_mi and "high_sugar_snack" in yemek_by_id[key[2]]["tags"] else 0)
+            - (10 if yemek_by_id[key[2]]["fried"] else 0)
+            - 0.01
+        )
         for key in x
-    )
+    ]
+    warning_reasons = []
 
     for gun in gunler:
         kalori_toplam = pulp.lpSum(var * yemek_by_id[yid]["kalori"] for (g, _, yid), var in x.items() if g == gun)
+        protein_toplam = pulp.lpSum(var * yemek_by_id[yid]["protein"] for (g, _, yid), var in x.items() if g == gun)
+        yag_toplam = pulp.lpSum(var * yemek_by_id[yid]["yag"] for (g, _, yid), var in x.items() if g == gun)
+        high_protein_sayisi = pulp.lpSum(var for (g, _, yid), var in x.items() if g == gun and yemek_by_id[yid]["high_protein"])
+        kalori_alt_sapma = pulp.LpVariable(f"kalori_alt_sapma_{gun}", 0)
+        kalori_ust_sapma = pulp.LpVariable(f"kalori_ust_sapma_{gun}", 0)
+        protein_alt_sapma = pulp.LpVariable(f"protein_alt_sapma_{gun}", 0)
+        yag_ust_sapma = pulp.LpVariable(f"yag_ust_sapma_{gun}", 0)
+        high_protein_eksik = pulp.LpVariable(f"high_protein_eksik_{gun}", 0)
         prob += kalori_toplam >= hedef_kalori * 0.85
         prob += kalori_toplam <= hedef_kalori * 1.15
+        prob += kalori_toplam + kalori_alt_sapma >= hedef_kalori * 0.90
+        prob += kalori_toplam - kalori_ust_sapma <= hedef_kalori * 1.10
+        prob += protein_toplam + protein_alt_sapma >= protein_minimumu
+        prob += yag_toplam - yag_ust_sapma <= yag_ust_hedef
+        prob += yag_toplam <= 125
+        prob += high_protein_sayisi + high_protein_eksik >= 2
+        objective_terms.append(-2.0 * kalori_alt_sapma)
+        objective_terms.append(-2.0 * kalori_ust_sapma)
+        objective_terms.append(-180 * protein_alt_sapma)
+        objective_terms.append(-22 * yag_ust_sapma)
+        objective_terms.append(-120 * high_protein_eksik)
 
         kahvalti_vars = [var for (g, slot, _), var in x.items() if g == gun and slot == "kahvalti"]
         prob += pulp.lpSum(kahvalti_vars) >= 2
@@ -755,6 +1136,48 @@ def haftalik_diyet_olustur(hedef_kalori: int, alerjiler: list = None, sevilmeyen
         prob += pulp.lpSum(var for (g, slot, _), var in x.items() if g == gun and slot == "ara") >= 1
         prob += pulp.lpSum(var for (g, slot, _), var in x.items() if g == gun and slot == "ara") <= 2
 
+        for ogun_slotlari in [
+            ["kahvalti"],
+            ["ogle_ana", "ogle_yan"],
+            ["aksam_ana", "aksam_yan"],
+            ["ara"],
+        ]:
+            karb_agir_vars = [
+                var for (g, slot, yid), var in x.items()
+                if g == gun and slot in ogun_slotlari and yemek_by_id[yid]["karb_agir"]
+            ]
+            if karb_agir_vars:
+                karb_cakisma = pulp.LpVariable(f"karb_cakisma_{gun}_{'_'.join(ogun_slotlari)}", 0)
+                prob += karb_cakisma >= pulp.lpSum(karb_agir_vars) - 1
+                objective_terms.append(-95 * karb_cakisma)
+
+            fried_vars = [
+                var for (g, slot, yid), var in x.items()
+                if g == gun and slot in ogun_slotlari and yemek_by_id[yid]["fried"]
+            ]
+            if fried_vars:
+                fried_cakisma = pulp.LpVariable(f"fried_cakisma_{gun}_{'_'.join(ogun_slotlari)}", 0)
+                prob += fried_cakisma >= pulp.lpSum(fried_vars) - 1
+                objective_terms.append(-85 * fried_cakisma)
+
+            ogun_yag_toplam = pulp.lpSum(
+                var * yemek_by_id[yid]["yag"]
+                for (g, slot, yid), var in x.items()
+                if g == gun and slot in ogun_slotlari
+            )
+            ogun_yag_sapma = pulp.LpVariable(f"ogun_yag_sapma_{gun}_{'_'.join(ogun_slotlari)}", 0)
+            prob += ogun_yag_toplam - ogun_yag_sapma <= 45
+            objective_terms.append(-4 * ogun_yag_sapma)
+
+            heavy_main_vars = [
+                var for (g, slot, yid), var in x.items()
+                if g == gun and slot in ogun_slotlari and "heavy_main" in yemek_by_id[yid]["tags"]
+            ]
+            if heavy_main_vars and karb_agir_vars:
+                agir_karb_cakisma = pulp.LpVariable(f"agir_karb_cakisma_{gun}_{'_'.join(ogun_slotlari)}", 0)
+                prob += agir_karb_cakisma >= pulp.lpSum(heavy_main_vars) + pulp.lpSum(karb_agir_vars) - 1
+                objective_terms.append(-140 * agir_karb_cakisma)
+
         for yan_turu in yan_kat:
             prob += pulp.lpSum(
                 var for (g, slot, yid), var in x.items()
@@ -775,11 +1198,159 @@ def haftalik_diyet_olustur(hedef_kalori: int, alerjiler: list = None, sevilmeyen
     for yemek in yemekler:
         haftalik_tekrar = [var for (_, _, yid), var in x.items() if yid == yemek["id"]]
         if haftalik_tekrar:
-            prob += pulp.lpSum(haftalik_tekrar) <= 2
+            tekrar_cezasi = pulp.LpVariable(f"tekrar_cezasi_id_{yemek['id']}", 0)
+            prob += tekrar_cezasi >= pulp.lpSum(haftalik_tekrar) - 1
+            objective_terms.append(-85 * tekrar_cezasi)
 
-    prob.solve(pulp.PULP_CBC_CMD(msg=False))
+    for isim_key in {y["isim_key"] for y in yemekler}:
+        ayni_isim_vars = [var for (_, _, yid), var in x.items() if yemek_by_id[yid]["isim_key"] == isim_key]
+        if ayni_isim_vars:
+            isim_tekrar_cezasi = pulp.LpVariable(f"isim_tekrar_cezasi_{abs(hash(isim_key))}", 0)
+            prob += isim_tekrar_cezasi >= pulp.lpSum(ayni_isim_vars) - 1
+            objective_terms.append(-120 * isim_tekrar_cezasi)
+
+    aileler = {y["aile"] for y in yemekler}
+    for gun_index in range(len(gunler) - 1):
+        bugun = gunler[gun_index]
+        yarin = gunler[gun_index + 1]
+        for aile in aileler:
+            ardarda_vars = [
+                var for (g, _, yid), var in x.items()
+                if g in [bugun, yarin] and yemek_by_id[yid]["aile"] == aile
+            ]
+            if len(ardarda_vars) > 1:
+                aile_ardisik_cezasi = pulp.LpVariable(f"aile_ardisik_cezasi_{gun_index}_{abs(hash(aile))}", 0)
+                prob += aile_ardisik_cezasi >= pulp.lpSum(ardarda_vars) - 1
+                objective_terms.append(-18 * aile_ardisik_cezasi)
+
+    for tur in {y["snack_turu"] for y in yemekler if y["ozel_kategori"] in ara_kat}:
+        snack_tur_vars = [
+            var for (_, slot, yid), var in x.items()
+            if slot == "ara" and yemek_by_id[yid]["snack_turu"] == tur
+        ]
+        if snack_tur_vars:
+            snack_tur_cezasi = pulp.LpVariable(f"snack_tur_cezasi_{abs(hash(tur))}", 0)
+            prob += snack_tur_cezasi >= pulp.lpSum(snack_tur_vars) - 3
+            objective_terms.append(-16 * snack_tur_cezasi)
+
+        for gun_index in range(len(gunler) - 1):
+            bugun = gunler[gun_index]
+            yarin = gunler[gun_index + 1]
+            ardarda_snack_vars = [
+                var for (g, slot, yid), var in x.items()
+                if g in [bugun, yarin] and slot == "ara" and yemek_by_id[yid]["snack_turu"] == tur
+            ]
+            if len(ardarda_snack_vars) > 1:
+                snack_ardisik_cezasi = pulp.LpVariable(f"snack_ardisik_cezasi_{gun_index}_{abs(hash(tur))}", 0)
+                prob += snack_ardisik_cezasi >= pulp.lpSum(ardarda_snack_vars) - 1
+                objective_terms.append(-20 * snack_ardisik_cezasi)
+
+    prob += pulp.lpSum(objective_terms)
+    prob.solve(pulp.PULP_CBC_CMD(timeLimit=15, msg=False))
     if pulp.LpStatus[prob.status] != "Optimal":
-        return basarisiz_cevap
+        warning_reasons.append("Optimizasyon modeli bu kısıtlarla tam çözülemedi; sağlık filtreleri korunarak esnek fallback menü üretildi.")
+        kullanim = {}
+        snack_kullanim = {}
+        onceki_gun_aileleri = set()
+        haftalik_plan = {}
+
+        def fallback_sec(slot, gun_aileleri, ogun_yemekleri, dislanan_idler=None):
+            dislanan_idler = dislanan_idler or set()
+            adaylar = [
+                yemek for yemek in yemekler
+                if slot_icin_uygun(slot, yemek) and yemek["id"] not in dislanan_idler
+            ]
+            if not adaylar:
+                return None
+
+            def puan(yemek):
+                skor = kullanim.get(yemek["isim_key"], 0) * 500
+                if yemek["aile"] in onceki_gun_aileleri:
+                    skor += 90
+                if yemek["aile"] in gun_aileleri:
+                    skor += 35
+                if slot == "ara":
+                    skor += snack_kullanim.get(yemek["snack_turu"], 0) * 45
+                    if yemek.get("healthy_snack"):
+                        skor -= 40
+                    if yemek.get("sugary_drink"):
+                        skor += 160 if diyabet_var_mi else 90
+                    if diyabet_var_mi and "high_sugar_snack" in yemek.get("tags", set()):
+                        skor += 120
+                if yemek["karb_agir"] and any(secili.get("karb_agir") for secili in ogun_yemekleri):
+                    skor += 260
+                if yemek.get("fried") and any(secili.get("fried") for secili in ogun_yemekleri):
+                    skor += 180
+                if "heavy_main" in yemek.get("tags", set()) and any(secili.get("carb_heavy") for secili in ogun_yemekleri):
+                    skor += 260
+                if yemek.get("carb_heavy") and any("heavy_main" in secili.get("tags", set()) for secili in ogun_yemekleri):
+                    skor += 260
+                if yemek.get("high_protein"):
+                    skor -= 35
+                skor -= yemek.get("sevilen_odul", 0)
+                skor -= yemek.get("rastgele_odul", 0)
+                return skor
+
+            adaylar.sort(key=puan)
+            secilen = adaylar[0].copy()
+            kullanim[secilen["isim_key"]] = kullanim.get(secilen["isim_key"], 0) + 1
+            if slot == "ara":
+                snack_kullanim[secilen["snack_turu"]] = snack_kullanim.get(secilen["snack_turu"], 0) + 1
+            gun_aileleri.add(secilen["aile"])
+            return secilen
+
+        for gun in gunler:
+            gun_aileleri = set()
+            ogunler = {
+                "Sabah": [],
+                slot_to_ogun["ogle_ana"]: [],
+                slot_to_ogun["aksam_ana"]: [],
+                slot_to_ogun["ara"]: [],
+            }
+
+            sabah_dislanan = set()
+            for _ in range(3):
+                secilen = fallback_sec("kahvalti", gun_aileleri, ogunler["Sabah"], sabah_dislanan)
+                if secilen:
+                    ogunler["Sabah"].append(secilen)
+                    sabah_dislanan.add(secilen["id"])
+
+            for slot, ogun_adi, adet in [
+                ("ogle_ana", slot_to_ogun["ogle_ana"], 1),
+                ("ogle_yan", slot_to_ogun["ogle_yan"], 1),
+                ("aksam_ana", slot_to_ogun["aksam_ana"], 1),
+                ("aksam_yan", slot_to_ogun["aksam_yan"], 2),
+                ("ara", slot_to_ogun["ara"], 1),
+            ]:
+                dislanan = set()
+                for _ in range(adet):
+                    secilen = fallback_sec(slot, gun_aileleri, ogunler[ogun_adi], dislanan)
+                    if secilen:
+                        ogunler[ogun_adi].append(secilen)
+                        dislanan.add(secilen["id"])
+
+            toplam = {"kalori": 0, "protein_g": 0, "karb_g": 0, "yag_g": 0}
+            for yemek_listesi in ogunler.values():
+                for yemek in yemek_listesi:
+                    toplam["kalori"] += yemek["kalori"]
+                    toplam["protein_g"] += yemek["protein"]
+                    toplam["karb_g"] += yemek["karb"]
+                    toplam["yag_g"] += yemek["yag"]
+
+            haftalik_plan[gun] = {
+                "ogunler": ogunler,
+                "gerceklesen": {
+                    "kalori": round(toplam["kalori"]),
+                    "protein_g": round(toplam["protein_g"]),
+                    "karb_g": round(toplam["karb_g"]),
+                    "yag_g": round(toplam["yag_g"]),
+                }
+            }
+            onceki_gun_aileleri = gun_aileleri
+
+        response = {"durum": "Başarılı", "haftalik_plan": haftalik_plan}
+        response["warning"] = " ".join(dict.fromkeys(warning_reasons))
+        return response
 
     haftalik_plan = {}
     for gun in gunler:
@@ -810,19 +1381,109 @@ def haftalik_diyet_olustur(hedef_kalori: int, alerjiler: list = None, sevilmeyen
             }
         }
 
-    return {"durum": "Başarılı", "haftalik_plan": haftalik_plan}
+    def plan_makrolarini_guncelle(gun_verisi):
+        toplam = {"kalori": 0, "protein_g": 0, "karb_g": 0, "yag_g": 0}
+        for yemek_listesi in gun_verisi.get("ogunler", {}).values():
+            for yemek in yemek_listesi:
+                toplam["kalori"] += float(yemek.get("kalori", 0) or 0)
+                toplam["protein_g"] += float(yemek.get("protein", 0) or 0)
+                toplam["karb_g"] += float(yemek.get("karb", 0) or 0)
+                toplam["yag_g"] += float(yemek.get("yag", 0) or 0)
+        gun_verisi["gerceklesen"] = {
+            "kalori": round(toplam["kalori"]),
+            "protein_g": round(toplam["protein_g"]),
+            "karb_g": round(toplam["karb_g"]),
+            "yag_g": round(toplam["yag_g"]),
+        }
+
+    def haftalik_plan_validate(plan):
+        issues = []
+        selected_food_names = []
+        onceki_gun_aileleri = set()
+
+        for gun, gun_verisi in plan.items():
+            gun_aileleri = set()
+            for ogun_adi, yemek_listesi in gun_verisi.get("ogunler", {}).items():
+                karb_sayisi = 0
+                snack_turleri = []
+                for yemek in yemek_listesi:
+                    selected_food_names.append(yemek.get("isim_key") or yemek_anahtari(yemek.get("isim", "")))
+                    aile = yemek.get("aile") or yemek_ailesi(yemek)
+                    gun_aileleri.add(aile)
+                    if yemek.get("karb_agir") or karb_agir_mi(yemek):
+                        karb_sayisi += 1
+                    if ogun_adi == slot_to_ogun["ara"]:
+                        snack_turleri.append(yemek.get("snack_turu") or snack_turu(yemek))
+
+                if karb_sayisi > 1:
+                    issues.append(f"{gun} {ogun_adi}: fazla karbonhidrat agir yemek")
+                if len(snack_turleri) != len(set(snack_turleri)):
+                    issues.append(f"{gun} {ogun_adi}: ayni snack turu tekrar ediyor")
+
+            if onceki_gun_aileleri & gun_aileleri:
+                issues.append(f"{gun}: onceki gunle benzer yemek ailesi tekrar ediyor")
+            onceki_gun_aileleri = gun_aileleri
+
+        tekrarlar = pd.Series(selected_food_names).value_counts() if selected_food_names else pd.Series(dtype="int64")
+        for isim_key, adet in tekrarlar.items():
+            if adet > 2:
+                issues.append(f"{isim_key}: haftada {adet} kez secildi")
+            elif tekrar_limiti == 1 and adet > 1:
+                issues.append(f"{isim_key}: haftada 1 kez hedefi asildi")
+        return issues
+
+    def repair_tekrarli_yemekler(plan):
+        kullanilan = set()
+        for _, gun_verisi in plan.items():
+            for _, yemek_listesi in gun_verisi.get("ogunler", {}).items():
+                for index, yemek in enumerate(list(yemek_listesi)):
+                    isim_key = yemek.get("isim_key") or yemek_anahtari(yemek.get("isim", ""))
+                    if isim_key not in kullanilan:
+                        kullanilan.add(isim_key)
+                        continue
+
+                    adaylar = [
+                        aday for aday in yemekler
+                        if aday["ozel_kategori"] == yemek.get("ozel_kategori")
+                        and aday["isim_key"] not in kullanilan
+                        and abs(aday["kalori"] - float(yemek.get("kalori", 0) or 0)) <= 120
+                    ]
+                    if yemek.get("karb_agir") or karb_agir_mi(yemek):
+                        adaylar = [aday for aday in adaylar if aday["karb_agir"]]
+                    adaylar.sort(key=lambda aday: (
+                        abs(aday["kalori"] - float(yemek.get("kalori", 0) or 0)),
+                        abs(aday["protein"] - float(yemek.get("protein", 0) or 0)),
+                    ))
+                    if adaylar:
+                        yemek_listesi[index] = adaylar[0].copy()
+                        kullanilan.add(adaylar[0]["isim_key"])
+            plan_makrolarini_guncelle(gun_verisi)
+        return plan
+
+    validation_issues = haftalik_plan_validate(haftalik_plan)
+    if validation_issues:
+        haftalik_plan = repair_tekrarli_yemekler(haftalik_plan)
+        validation_issues = haftalik_plan_validate(haftalik_plan)
+        if validation_issues:
+            warning_reasons.append("Sağlık ve kalori önceliği nedeniyle bazı çeşitlilik hedefleri tam karşılanamadı.")
+
+    response = {"durum": "Başarılı", "haftalik_plan": haftalik_plan}
+    if warning_reasons:
+        response["warning"] = " ".join(dict.fromkeys(warning_reasons))
+    return response
 
 def bmr_ve_kalori_hesapla(cinsiyet: str, yas: int, boy_cm: float, kilo_kg: float, hareket_katsayisi: float, hedef: str):
     if cinsiyet.lower() == "erkek": bmr = (10 * kilo_kg) + (6.25 * boy_cm) - (5 * yas) + 5
     else: bmr = (10 * kilo_kg) + (6.25 * boy_cm) - (5 * yas) - 161
     
     gunluk_harcanan_kalori = bmr * hareket_katsayisi
-    if hedef == "Kilo Ver": hedef_kalori = gunluk_harcanan_kalori - 500
-    elif hedef == "Kas Yap": hedef_kalori = gunluk_harcanan_kalori + 300
+    hedef_str = str(hedef).lower().strip()
+    if "ver" in hedef_str or "lose" in hedef_str: hedef_kalori = gunluk_harcanan_kalori - 400
+    elif "al" in hedef_str or "gain" in hedef_str: hedef_kalori = gunluk_harcanan_kalori + 400
     else: hedef_kalori = gunluk_harcanan_kalori
-    if hedef_kalori < 1200:
-        hedef_kalori = 1200
-    return int(hedef_kalori)
+    hedef_kalori = max(1200, int(hedef_kalori))
+    print(f"HESAPLANAN YENİ KALORİ: {hedef_kalori} | Hedef: {hedef_str}")
+    return hedef_kalori
 
 def kullanici_kaydet(email: str, ad: str, cinsiyet: str, yas: int, boy_cm: float, kilo_kg: float, hareket_katsayisi: float, hedef: str):
     hedef_kalori = bmr_ve_kalori_hesapla(cinsiyet, yas, boy_cm, kilo_kg, hareket_katsayisi, hedef)
@@ -871,6 +1532,43 @@ def kullanici_kaydet(email: str, ad: str, cinsiyet: str, yas: int, boy_cm: float
             "db_kayit": "atlanmis"
         }
 
+def profil_kaydet(email: str, goal: str = None, diet_type: str = None, alerjiler: list = None, sevilmeyenler: list = None, sevilenler: list = None, saglik_sorunlari: list = None, hedef_kalori: int = None):
+    profil_data = {
+        "email": email,
+        "goal": goal,
+        "diet_type": diet_type,
+        "alerjiler": alerjiler or [],
+        "sevilmeyenler": sevilmeyenler or [],
+        "sevilenler": sevilenler or [],
+        "saglik_sorunlari": saglik_sorunlari or [],
+    }
+    if hedef_kalori is None:
+        kullanici = kullanici_kontrol_et(email)
+        if not kullanici.get("kayitli_mi"):
+            raise ValueError("Kalori hesaplamak için kayıtlı kullanıcı fiziksel bilgileri bulunamadı.")
+        hedef_kalori = bmr_ve_kalori_hesapla(
+            kullanici.get("cinsiyet"),
+            kullanici.get("yas"),
+            kullanici.get("boy_cm"),
+            kullanici.get("kilo_kg"),
+            kullanici.get("hareket_katsayisi"),
+            goal,
+        )
+
+    profil_data["hedef_kalori"] = hedef_kalori
+
+    with engine.begin() as conn:
+        conn.execute(text("""
+            UPDATE Kullanicilar
+            SET Hedef_Kalori = :hedef_kalori
+            WHERE Email = :email
+        """), {
+            "email": email,
+            "hedef_kalori": profil_data["hedef_kalori"],
+        })
+
+    return {"durum": "Başarılı", "profil_data": profil_data}
+
 def kilo_guncelle(email: str, yeni_kilo: float):
     with engine.begin() as conn:
         sorgu = text("SELECT Kilo_kg, Hareket_Katsayisi, Hedef_Kalori FROM Kullanicilar WHERE Email = :email")
@@ -900,7 +1598,7 @@ def kilo_guncelle(email: str, yeni_kilo: float):
         
     return {"durum": "Başarılı", "mesaj": "Kilonuz güncellendi", "yeni_hedef_kalori": yeni_hedef_kalori}
 
-def alternatif_yemek_bul_ml(eski_yemek_id: int, kategori: str, alerjiler: list, sevilmeyenler: list):
+def alternatif_yemek_bul_ml(eski_yemek_id: int, kategori: str, alerjiler: list, sevilmeyenler: list, onceki_secilen_yemekler: list = None):
     with engine.connect() as conn:
         sorgu = text("SELECT * FROM Yemekler WHERE Kategori = :kategori")
         sonuc = conn.execute(sorgu, {"kategori": kategori})
@@ -912,9 +1610,21 @@ def alternatif_yemek_bul_ml(eski_yemek_id: int, kategori: str, alerjiler: list, 
         sutun_isimleri = sonuc.keys()
         df = pd.DataFrame(yemekler_db, columns=sutun_isimleri)
 
-        yasaklilar = alerjiler + sevilmeyenler
+        yasaklilar = [normalize_tr(yasakli) for yasakli in (alerjiler + sevilmeyenler) if str(yasakli).strip()]
+        onceki_secilenler = {
+            normalize_tr(yemek)
+            for yemek in (onceki_secilen_yemekler or [])
+            if str(yemek).strip()
+        }
+        filtre_alani = (
+            df['Yemek_Adı'].fillna("").map(normalize_tr)
+            + " "
+            + df.get('Baskin_Malzemeler', pd.Series("", index=df.index)).fillna("").map(normalize_tr)
+            + " "
+            + df.get('Alerjen_Bilgisi', pd.Series("", index=df.index)).fillna("").map(normalize_tr)
+        )
         for yasakli in yasaklilar:
-            df = df[~df['Yemek_Adı'].str.contains(yasakli, case=False, na=False)]
+            df = df[~filtre_alani.loc[df.index].str.contains(yasakli, regex=False, na=False)]
 
         if df.empty:
             return {"durum": "Hata", "mesaj": "Kısıtlamalara uyan alternatif kalmadı."}
@@ -930,15 +1640,29 @@ def alternatif_yemek_bul_ml(eski_yemek_id: int, kategori: str, alerjiler: list, 
         scaler = StandardScaler()
         scaled_features = scaler.fit_transform(features)
 
-        knn_model = NearestNeighbors(n_neighbors=2, metric='cosine', algorithm='brute')
+        n_neighbors = min(10, len(df))
+        knn_model = NearestNeighbors(n_neighbors=n_neighbors, metric='cosine', algorithm='brute')
         knn_model.fit(scaled_features)
 
         matris_indeksi = df.index.get_loc(eski_yemek_index)
         hedef_vektor = scaled_features[matris_indeksi].reshape(1, -1)
         mesafeler, indeksler = knn_model.kneighbors(hedef_vektor)
 
-        en_iyi_index_df = indeksler[0][1]
-        gercek_index = df.index[en_iyi_index_df]
+        secilen_index = None
+        yedek_index = None
+        for en_iyi_index_df in indeksler[0][1:]:
+            gercek_index = df.index[en_iyi_index_df]
+            aday = df.loc[gercek_index]
+            aday_adi = normalize_tr(str(aday.get('Yemek_Adı', '')))
+            if yedek_index is None:
+                yedek_index = gercek_index
+            if aday_adi not in onceki_secilenler:
+                secilen_index = gercek_index
+                break
+
+        gercek_index = secilen_index or yedek_index
+        if gercek_index is None:
+            return {"durum": "Hata", "mesaj": "Bu kategoride uygun alternatif bulunamadı."}
 
         yeni_yemek = df.loc[gercek_index]
 
